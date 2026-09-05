@@ -4,7 +4,7 @@ import { isCodexAccountGenerationLive, registerCodexRefreshGenerationHandoff } f
 import { handOffThreadAffinityGeneration } from "./routing/thread-affinity";
 import { codexAccountLogLabel } from "./account-label";
 import { isCodexAccountPaused } from "./account-pause";
-import { clearCodexAccountPin, pinnedCodexAccountId } from "./account-priority";
+import { clearCodexAccountPin, pinnedCodexAccountId, codexAccountPriorityFailbackEnabled, CODEX_PRIORITY_FAILBACK_REFRESH_MS } from "./account-priority";
 import { isCodexAccountUsable, type CodexAccountUsabilityOptions } from "./account-usability";
 import { markAccountNeedsReauth } from "./account-runtime-state";
 import { codexAccountPinDrainReason } from "./routing/pin-drain";
@@ -493,6 +493,30 @@ export function resolveCodexAccountForThread(
   return resolution.status === "selected" ? resolution.accountId : null;
 }
 
+/** The opt-in may preempt priority, never eligibility, a quota refusal or a manual pin. */
+function pickAffinityPriorityFailback(
+  config: OcxConfig,
+  accountId: string,
+  now: number,
+  quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): string | null {
+  if (!codexAccountPriorityFailbackEnabled(config)
+    || accountPoolStrategyForScope(config, quotaScope) !== "quota") return null;
+  const candidate = pickPriorityPreemption(config, accountId, now, quotaScope, selectionOptions);
+  if (!candidate || hasUnrecoveredCodexQuotaRefusal(candidate, quotaScope)
+    || shouldFailover(config, candidate, now)) return null;
+  const quota = getAccountQuota(candidate);
+  // Retained bars alone are not a reason to discard a healthy conversation's cache.
+  if (!quota || !Number.isFinite(quota.updatedAt)
+    || now - quota.updatedAt >= CODEX_PRIORITY_FAILBACK_REFRESH_MS
+    || (quota.shortObservedAt !== undefined
+      && now - quota.shortObservedAt >= CODEX_PRIORITY_FAILBACK_REFRESH_MS)) return null;
+  const usage = computeCodexUsageScore(quota,
+    getPoolAccountPlanForSelection(config, candidate, selectionOptions), now);
+  return !isUnknownUsage(usage) && usage < (config.autoSwitchThreshold ?? 80) ? candidate : null;
+}
+
 function previewReusableAffinityAccount(
   entry: ThreadAffinityEntry | undefined,
   config: OcxConfig,
@@ -529,6 +553,8 @@ function previewReusableAffinityAccount(
   if (accountPoolStrategyForScope(config, quotaScope) === "reset-first") {
     return resetFirstAffinityReplacement(entry, config, now, quotaScope, selectionOptions) ?? entry.accountId;
   }
+  const recovered = pickAffinityPriorityFailback(config, entry.accountId, now, quotaScope, selectionOptions);
+  if (recovered) return recovered;
   // Quota strategy only: non-quota strategies keep affinity for ongoing threads
   // (new-session-only rotation — docs / affinity policy A).
   if (accountPoolStrategyForScope(config, quotaScope) === "quota") {
@@ -653,6 +679,8 @@ function reevaluateAffinityQuota(
     return replacement;
   }
   if (strategy !== "quota") return null;
+  const recovered = pickAffinityPriorityFailback(config, entry.accountId, now, quotaScope, selectionOptions);
+  if (recovered) { entry.lastReevalAt = now; return recovered; }
   const threshold = getEffectiveCodexAutoSwitchThreshold(config, entry.accountId);
   const usage = threshold > 0
     ? computeCodexUsageScore(

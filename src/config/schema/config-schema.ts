@@ -220,6 +220,8 @@ export const configSchema = z.object({
   codexAccountPriorities: codexAccountPrioritiesSchema.optional().catch(undefined),
   // Malformed hand edits disable only account-local overrides, preserving the rest of config.
   codexAccountAutoSwitchThresholds: codexAccountAutoSwitchThresholdsSchema.optional().catch(undefined),
+  // An invalid optional preference must not discard providers or credential rows.
+  codexAccountPriorityFailback: z.boolean().optional().catch(false),
   activeCodexAccountPinned: z.string().regex(CODEX_ACCOUNT_PIN_PATTERN).optional().catch(undefined),
   // A malformed hand edit must degrade to false without discarding providers, accounts,
   // or the exact selector map. Live writes remain strict.
