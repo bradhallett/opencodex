@@ -96,7 +96,7 @@ function textTurn(id: string, text: string): string {
 
 interface ScenarioRequest { body: Record<string, unknown>; turnId: string | null }
 
-function scenarioFetch(options: { omitUsage?: boolean } = {}): {
+function scenarioFetch(options: { omitUsage?: boolean; usageInputOnly?: boolean; omitDone?: boolean } = {}): {
   fetch: (input: URL, init: RequestInit) => Promise<Response>;
   requests: ScenarioRequest[];
 } {
@@ -107,14 +107,16 @@ function scenarioFetch(options: { omitUsage?: boolean } = {}): {
     requests.push({ body, turnId: metadata });
     if (!body.previous_response_id) {
       const raw = toolTurn("fc_lookup", "call_lookup", "lookup_inventory", { sku: "TEST-123" });
-      return sse(options.omitUsage
-        ? raw.replace(/"usage":\{[^}]*\},/, "")
-        : raw);
+      if (options.omitUsage) return sse(raw.replace(/"usage":\{[^}]*\},/, ""));
+      if (options.usageInputOnly) {
+        return sse(raw.replace(/"usage":\{[^}]*\},/, '"usage":{"input_tokens":20,"output_tokens":0,"total_tokens":20},'));
+      }
+      return sse(raw);
     }
     if (body.previous_response_id === "resp_for_call_lookup") {
       return sse(toolTurn("fc_reserve", "call_reserve", "reserve_inventory", { sku: "TEST-123", quantity: 2 }));
     }
-    return sse(textTurn("msg_final", "R-42"));
+    const finalTurn = textTurn("msg_final", "R-42"); return sse(options.omitDone ? finalTurn.replace("data: [DONE]\n\n", "") : finalTurn);
   };
   return { fetch, requests };
 }
@@ -278,6 +280,26 @@ describe("CodeBuddy live acceptance harness", () => {
       new AbortController().signal,
       fetch,
     ))).toBe("usage_missing");
+  });
+
+  test("a tool leg with zero output tokens fails the scenario", async () => {
+    // The single-field check this replaced accepted a report where the tool leg's output usage
+    // was lost; both directions of the partial-usage fold must be positive.
+    const { fetch } = scenarioFetch({ usageInputOnly: true });
+    expect(await rejectedCode(runAcceptanceScenario(
+      new URL("http://127.0.0.1:43210"),
+      new AbortController().signal,
+      fetch,
+    ))).toBe("usage_zero");
+  });
+
+  test("a stream ending after completion without [DONE] fails acceptance", async () => {
+    const { fetch } = scenarioFetch({ omitDone: true });
+    expect(await rejectedCode(runAcceptanceScenario(
+      new URL("http://127.0.0.1:43210"),
+      new AbortController().signal,
+      fetch,
+    ))).toBe("missing_done");
   });
 
   test("a mention of the expected marker is not a semantic pass", async () => {
