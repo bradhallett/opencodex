@@ -75,3 +75,11 @@ action outside the diff; the lane delivers the workflow and the drivers.
 - English in every public artifact, and no host names, addresses, accounts or absolute user paths
   anywhere in the tree.
 
+## Who is running each lane
+
+C, B and D run on one model and A, E and F on another, deliberately split so a systematic blind
+spot in either does not cover all six. The split as dispatched is not the one that was intended:
+A, E and F went out on a third model by a dispatch error on my part. By the time it was caught,
+all three had substantial work in flight — a dozen modified files between them and two commits on
+F — so they were left alone rather than restarted. It is recorded here because a later reader
+comparing lane quality should know the split was not what the plan says.
