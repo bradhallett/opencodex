@@ -3,9 +3,10 @@
 Nine decisions, split into work that can proceed in parallel. Each lane is one branch, ordered
 commits, one pull request to `dev`. No native stacks, no child PR chains.
 
-Lane order matters in two places only: **A** publishes the CLI resolve and stop contracts that
-**B** consumes, and **C** publishes the ownership record that **B** writes. Everything else is
-independent.
+Lane order matters in two places only. **A** publishes the CLI resolve and stop contracts that **B**
+consumes, and **C** must land before **B** wires the stop shell-out, because every service-state
+writer has to become preserve-and-swap before a second writer exists at all (see R4 in
+`100_resolutions.md`). Everything else is independent.
 
 ## A — the CLI contract the shell will consume (D5, D4)
 
