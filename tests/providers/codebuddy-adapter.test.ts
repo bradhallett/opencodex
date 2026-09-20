@@ -408,6 +408,18 @@ describe("codebuddy runTurn streams a headless turn", () => {
     ]);
   });
 
+  test("processes a large multiline delta without repeated suffix work", () => {
+    const events: AdapterEvent[] = [];
+    const guarded = guardCodeBuddyScaffolding(event => events.push(event));
+    const answer = "a\n".repeat(40_000);
+    const startedAt = performance.now();
+
+    guarded({ type: "text_delta", text: answer });
+
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(events).toEqual([{ type: "text_delta", text: answer }]);
+  });
+
   test("delivers quoted and inline-code DSML literals unchanged", () => {
     const events: AdapterEvent[] = [];
     const guarded = guardCodeBuddyScaffolding(event => events.push(event));

@@ -28,9 +28,9 @@ interface ScanResult {
   lineStart: boolean;
 }
 
-function prefixAtEnd(text: string, at: number, expected: string): boolean {
-  const rest = text.slice(at).toLowerCase();
-  return rest.length < expected.length && expected.startsWith(rest);
+function prefixAtEnd(loweredText: string, at: number, expected: string): boolean {
+  const remaining = loweredText.length - at;
+  return remaining <= expected.length && expected.startsWith(loweredText.slice(at));
 }
 
 /**
@@ -46,6 +46,7 @@ function scan(
   initialFence: "`" | "~" | null,
   initialLineStart: boolean,
 ): ScanResult {
+  const loweredText = text.toLowerCase();
   let fence = initialFence;
   let lineStart = initialLineStart;
   let index = 0;
@@ -60,13 +61,12 @@ function scan(
         lineStart = false;
         continue;
       }
-      if (fenceMarkers.some(marker => prefixAtEnd(text, index, marker))) {
+      if (fenceMarkers.some(marker => prefixAtEnd(loweredText, index, marker))) {
         return { safe: text.slice(0, index), held: text.slice(index), fail: false, fence, lineStart };
       }
 
       if (!fence) {
-        const lowered = text.slice(index).toLowerCase();
-        if (lowered.startsWith(DSML_CALLS_LINE)) {
+        if (loweredText.startsWith(DSML_CALLS_LINE, index)) {
           const afterCalls = index + DSML_CALLS_LINE.length;
           let invokeAt = -1;
           if (text[afterCalls] === "\n") invokeAt = afterCalls + 1;
@@ -76,16 +76,15 @@ function scan(
           }
 
           if (invokeAt >= 0) {
-            const invokeRest = text.slice(invokeAt).toLowerCase();
-            const invokeNameStart = invokeRest[DSML_INVOKE_PREFIX.length];
-            if (invokeRest.startsWith(DSML_INVOKE_PREFIX) && invokeNameStart && !/[\s"]/.test(invokeNameStart)) {
+            const invokeNameStart = loweredText[invokeAt + DSML_INVOKE_PREFIX.length];
+            if (loweredText.startsWith(DSML_INVOKE_PREFIX, invokeAt) && invokeNameStart && !/[\s"]/.test(invokeNameStart)) {
               return { safe: text.slice(0, index), held: "", fail: true, fence, lineStart };
             }
-            if (invokeRest.length === 0 || DSML_INVOKE_PREFIX.startsWith(invokeRest)) {
+            if (invokeAt === text.length || prefixAtEnd(loweredText, invokeAt, DSML_INVOKE_PREFIX)) {
               return { safe: text.slice(0, index), held: text.slice(index), fail: false, fence, lineStart };
             }
           }
-        } else if (prefixAtEnd(text, index, DSML_CALLS_LINE)) {
+        } else if (prefixAtEnd(loweredText, index, DSML_CALLS_LINE)) {
           return { safe: text.slice(0, index), held: text.slice(index), fail: false, fence, lineStart };
         }
       }
