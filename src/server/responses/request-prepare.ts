@@ -41,7 +41,6 @@ import {
 import {
   copyPreviousResponseReplayProvenance,
   expandPreviousResponseInput,
-  previousResponseScopeMismatch,
   previousResponseReplayFailure,
   markBodyNonPersistable,
   previousResponseProviderState,
@@ -56,6 +55,7 @@ import { bindTurnTerminationScope, rememberDeliveredFinalAnswer } from "../../re
 import { requestLogSpeedLabel, readConfiguredCodexServiceTier } from "../request-log";
 import type { RouteResult } from "../../router";
 import {
+  captureRouteStaticPolicy,
   routeConcreteModel,
   routeCompactionModel,
   routeModel,
@@ -105,7 +105,9 @@ import { hasUnmappedRoutedCustomToolOutput } from "../../responses/custom-tool-c
 import { PROVIDER_OWNED_CONTINUATION_WIRES, resolvedAdapterWire } from "../../responses/continuation-ownership";
 import {
   isCodexReserveHelperUnsupported,
+  isCodexReserveOptInMissing,
   CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE,
+  CODEX_RESERVE_OPT_IN_REQUIRED_MESSAGE,
 } from "../../codex/loopback-target";
 import { checkComboTargetInputAdmission, checkInputAdmission } from "./input-admission";
 import { nativeContextLimits } from "../../codex/catalog";
@@ -117,6 +119,7 @@ import {
   codexLogAccountId,
 } from "./core-codex-account";
 import { acquireUpstreamHostAdmission } from "../../codex/upstream-host-health";
+import { applyCompactionRoutingOverride, compactionRoutingKeepsProviderIdentity } from "./compaction-routing";
 import { codexAuthContextLogLabel } from "../../codex/account-label";
 import {
   conversationStateBindingFromAuth,
@@ -147,6 +150,13 @@ export async function prepareResponsesRequest(
     }
     return decodeRequestErrorResponse(err, "responses");
   }
+  if (!options.comboAttempt && !options.compactionRoutingOverride && inboundWire === "responses") {
+    options.compactionRoutingOverride = applyCompactionRoutingOverride(body, req.headers, config, {
+      endpoint: "responses",
+      transport: options.inboundTransport,
+    });
+  }
+  options.onRequestBodyParsed?.(body);
   // An effort row naming a table-less combo (`combo/x--high`) must reach the combo dispatcher
   // as its base id, so the selector is normalized here, before comboIdFromRawBody reads model.
   const comboRows = !options.comboAttempt && body && typeof body === "object" && !Array.isArray(body)
@@ -178,7 +188,7 @@ export async function prepareResponsesRequest(
   }
   // Compaction may send the last client-visible bare model after a combo switch.
   // Configured selectors take precedence; otherwise recall before combo dispatch (#3891).
-  if (!options.comboAttempt && body && typeof body === "object" && !Array.isArray(body)) {
+  if (!options.comboAttempt && !options.compactionRoutingOverride && body && typeof body === "object" && !Array.isArray(body)) {
     const rawModel = (body as { model?: unknown }).model;
     const rawInput = (body as { input?: unknown }).input;
     const isCompactionTrigger = Array.isArray(rawInput)
@@ -200,7 +210,7 @@ export async function prepareResponsesRequest(
   // hops — which only exist inside that loop — are unreachable (#4129). Rewrite the selector
   // here instead, before comboIdFromRawBody reads `model`, and identify the combo by CONFIG
   // LOOKUP so the check can never observe a one-candidate collapse.
-  if (!options.comboAttempt && body && typeof body === "object" && !Array.isArray(body)) {
+  if (!options.comboAttempt && !options.compactionRoutingOverride && body && typeof body === "object" && !Array.isArray(body)) {
     const shadowIntercept = config.shadowCallIntercept;
     const rawShadowModel = (body as { model?: unknown }).model;
     if (shadowIntercept?.enabled && shadowIntercept.model && typeof rawShadowModel === "string"
@@ -231,16 +241,23 @@ export async function prepareResponsesRequest(
     (body as { input?: unknown } | undefined)?.input,
   );
   const inboundClientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() || undefined;
+  // The request's OWN thread, which `x-codex-parent-thread-id` is not: parallel children of one
+  // parent all present the same parent id. `codexConversationIdentity` already reads this header
+  // for the same reason, and a surface that must tell siblings apart needs it too (#5033).
+  const inboundOwnThreadId = req.headers.get("thread-id")?.trim() || undefined;
   const cursorClientThreadId = codexPoolAffinityKey(req.headers);
   const originalBody = body;
   if (options.comboReplaySnapshot) {
     copyPreviousResponseReplayProvenance(options.comboReplaySnapshot.sourceBody, body);
   } else {
     body = expandPreviousResponseInput(body, inboundClientThreadId);
-    if (previousResponseScopeMismatch(body)) {
-      console.warn("[opencodex] dropped a previous_response_id with a mismatched client task scope; continuing fresh");
+    const replayFailure = previousResponseReplayFailure(body);
+    if (replayFailure?.reason === "scope_mismatch") {
+      // Bounded and content-free: no task scope and nothing about the retained entry.
+      console.warn("[opencodex] refusing continuation because the client task scope does not match replay state");
     }
-    if (previousResponseReplayFailure(body)) {
+    // Local replay failures require full client replay.
+    if (replayFailure) {
       return formatErrorResponse(
         400,
         "previous_response_not_found",
@@ -256,10 +273,14 @@ export async function prepareResponsesRequest(
   // encrypted_content slots as plaintext. Rewrite them to input_text on the RAW body BEFORE
   // parsing so every consumer sees the payload: parseRequest (routed/translated providers read
   // the parsed messages) and the native passthrough (_rawBody is this same object, serialized
-  // verbatim). Genuine backend ciphertext is left byte-identical (looksLikeBackendCiphertext).
+  // verbatim). Structurally valid backend ciphertext stays byte-identical; encoded-looking unknown
+  // slots remain opaque only until final-route handling can preserve or strip them safely.
   {
     const rewritten = sanitizeEncryptedContentInPlace(
       (body as { input?: unknown } | undefined)?.input,
+      // The final destination is not known yet. Keep ambiguous encoded slots opaque until route
+      // selection can either strip them for a third party or apply strict native classification.
+      { preserveUnknownOpaqueSlots: true },
     );
     if (rewritten > 0)
       console.warn(
@@ -303,6 +324,7 @@ export async function prepareResponsesRequest(
       ? options.comboReplaySnapshot.providerContinuation
       : previousResponseProviderState(parsed.previousResponseId);
     if (providerContinuationCandidate) parsed._providerContinuationCandidate = providerContinuationCandidate;
+    if (inboundOwnThreadId) parsed._codexOwnThreadId = inboundOwnThreadId;
     if (inboundClientThreadId) {
       parsed._clientThreadId = inboundClientThreadId;
     } else if (
@@ -371,7 +393,7 @@ export async function prepareResponsesRequest(
   if (!logCtx.conversationId) {
     logCtx.conversationId = resolvedConversationId;
   }
-  logCtx.requestedModel = parsed.modelId;
+  logCtx.requestedModel = options.compactionRoutingOverride?.sourceModel ?? parsed.modelId;
   logCtx.requestedEffort = parsed.options.reasoning;
   // What this request may spend beyond its input, for the durable spend reservation (#4707).
   // Read from the caller rather than from the adapter's serialized body, because the
@@ -389,19 +411,29 @@ export async function prepareResponsesRequest(
 
   let route: RouteResult;
   let credentialDomainWasRewritten = false;
+  const captureInboundRoutePolicy = (candidate: RouteResult): RouteResult => {
+    candidate.staticPolicy = captureRouteStaticPolicy(
+      candidate.providerName,
+      candidate.modelId,
+      candidate.provider,
+      candidate.staticPolicy.effectiveAlias,
+      inboundWire,
+    );
+    return candidate;
+  };
   try {
     // A `compaction_trigger` turn may name a bare native model the operator has
     // no canonical OpenAI route for (#2901). Only the initial compaction route
     // may fall back to the configured default provider; combo attempts and the
     // later fallback/recovery re-routes keep the ordinary reservation.
-    const resolveRoute = (modelId: string) => options.comboAttempt
+    const resolveRoute = (modelId: string) => captureInboundRoutePolicy(options.comboAttempt
       ? routeConcreteModel(config, modelId)
       : parsed._compactionRequest === true
         ? routeCompactionModel(config, modelId, evidenceFromBody(parsed._rawBody))
-        : routeModel(config, modelId, evidenceFromBody(parsed._rawBody));
+        : routeModel(config, modelId, evidenceFromBody(parsed._rawBody)));
     const _sci = config.shadowCallIntercept;
     let shadowRoute: RouteResult | undefined;
-    if (_sci?.enabled && _sci.model && isShadowSourceModel(parsed.modelId, _sci.sourceModels)) {
+    if (!options.compactionRoutingOverride && _sci?.enabled && _sci.model && isShadowSourceModel(parsed.modelId, _sci.sourceModels)) {
       const sourcePrefix = shadowSourceModelPrefix(parsed.modelId, _sci.sourceModels)!;
       let sourceIdentity = { providerName: OPENAI_CODEX_PROVIDER_ID, modelId: sourcePrefix };
       try {
@@ -429,8 +461,17 @@ export async function prepareResponsesRequest(
         shadowRoute = targetRoute;
       }
     }
-    if (parsed._compactionRequest === true) parsed._cursorIsolateConversation = true;
+    if (parsed._compactionRequest === true || options.compactionRoutingOverride) parsed._cursorIsolateConversation = true;
     route = shadowRoute ?? resolveRoute(parsed.modelId);
+    if (options.compactionRoutingOverride && !compactionRoutingKeepsProviderIdentity(config, options.compactionRoutingOverride, route)) {
+      credentialDomainWasRewritten = true;
+      // The destination does not share the conversation's credential domain, so it can neither
+      // verify the source backend's reasoning ciphertext nor decode its native compaction blob.
+      // This is the same condition an account change already reports (account-change-state.ts),
+      // and the serializer turns a stored summary into readable text instead of dropping it.
+      parsed._stripReasoningEncryptedContent = true;
+      if (parsed._compactionRequest === true) parsed._portableCompaction = true;
+    }
     logCtx.routeDecision = route.routeDecision;
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {
@@ -626,7 +667,9 @@ export async function prepareResponsesRequest(
 
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
       try {
-        route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
+        route = captureInboundRoutePolicy(
+          routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody)),
+        );
         credentialDomainWasRewritten = true;
         logCtx.routeDecision = route.routeDecision;
       } catch (err) {
@@ -699,6 +742,7 @@ export async function prepareResponsesRequest(
             "_providerContinuationOwner",
             "_cursorConversationId",
             "_clientThreadId",
+            "_codexOwnThreadId",
             "_promptCacheKeyIsSharedCohort",
             "_cursorClientThreadId",
             "_reasoningReplayScope",
@@ -823,7 +867,9 @@ export async function prepareResponsesRequest(
 
           if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
             try {
-              route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
+              route = captureInboundRoutePolicy(
+                routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody)),
+              );
               credentialDomainWasRewritten = true;
               logCtx.routeDecision = route.routeDecision;
             } catch (err) {
@@ -848,6 +894,17 @@ export async function prepareResponsesRequest(
   }
 
   if (options.abortSignal?.aborted) return clientCancelledResponse();
+
+  if (inboundWire === "responses" && isCanonicalOpenAiForwardProvider(route.provider)) {
+    const rewritten = sanitizeEncryptedContentInPlace(
+      (body as { input?: unknown } | undefined)?.input,
+    );
+    if (rewritten > 0) {
+      console.warn(
+        `[opencodex] rewrote ${rewritten} non-Fernet encrypted_content part(s) before canonical native replay`,
+      );
+    }
+  }
 
   // Encrypted child tasks may reach the canonical native backend or an explicitly trusted
   // direct Responses route. This runs against the FINAL route so native-only fallback can
@@ -894,6 +951,7 @@ export async function prepareResponsesRequest(
       route.modelId,
       route.provider,
       inboundWire,
+      route.staticPolicy,
     );
     if (wireProvider.adapter === "openai-responses" && !isCanonicalOpenAiForwardProvider(wireProvider)) {
       const repaired = stripAgentMessageCiphertextInPlace((body as { input?: unknown } | undefined)?.input);
@@ -917,12 +975,12 @@ export async function prepareResponsesRequest(
     return formatErrorResponse(
       400,
       "previous_response_not_found",
-      "OpenAI forward continuation state is unavailable or expired; resend the full conversation without previous_response_id.",
+      "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
     );
   }
 
   if (hasUnexpandedPreviousResponse) {
-    const continuationProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
+    const continuationProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire, route.staticPolicy);
     // Can the DESTINATION see the history this process failed to restore? Only the native
     // Responses passthrough can: it forwards previous_response_id to a backend that stored the
     // chain. Every translated wire rebuilds the conversation from this request's input alone —
@@ -943,7 +1001,7 @@ export async function prepareResponsesRequest(
       return formatErrorResponse(
         400,
         "previous_response_not_found",
-        "Routed continuation requires unavailable local history; resend the full conversation without previous_response_id.",
+        "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
       );
     }
   }
@@ -975,6 +1033,27 @@ export async function prepareResponsesRequest(
     && isCodexReserveHelperUnsupported(options.codexAuthPolicy ?? config, route.modelId,
       options.admission, options.visionDescribeTerminal === true)) {
     return formatErrorResponse(400, "invalid_request_error", CODEX_RESERVE_HELPER_UNSUPPORTED_MESSAGE);
+  }
+  // #4940: the opt-in is off, so every Reserve affordance in this process is inert -- no catalog
+  // row, no main-credential substitution, no authorization handshake, and no `luna-reserve` header
+  // on the send. Forwarding `gpt-reserve` as an ordinary native model therefore buys nothing but a
+  // 429 "The usage limit has been reached", which names neither the real cause nor the setting the
+  // operator would have to change. Refuse here instead, on the same terms and in the same place as
+  // the helper refusal above: after alias/combo resolution, before auth, host-circuit budget or any
+  // upstream byte.
+  //
+  // Two narrowings beyond the predicate, both about not answering a question this refusal cannot
+  // answer correctly. A terminal vision/search helper is excluded because enabling the opt-in would
+  // not make it work -- it would produce the helper refusal above instead, so telling that caller to
+  // enable the flag is advice that does not hold. Non-native inbound wires are excluded because a
+  // `gpt-reserve` selector reaching us over Chat or Anthropic Messages is an operator-authored
+  // route (a `claudeCode.modelMap` entry, say), not a Codex client that was forced onto Reserve by
+  // its own usage snapshot, and that route keeps whatever behavior it has today.
+  if (inboundWire === "responses"
+    && options.visionDescribeTerminal !== true
+    && isCanonicalOpenAiForwardProvider(route.provider)
+    && isCodexReserveOptInMissing(options.codexAuthPolicy ?? config, route.modelId, options.admission)) {
+    return formatErrorResponse(400, "invalid_request_error", CODEX_RESERVE_OPT_IN_REQUIRED_MESSAGE);
   }
   // Refuse an input that cannot plausibly fit the model context window before spending auth,
   // circuit budget, or upstream bandwidth on a turn the provider will reject anyway (#1412).

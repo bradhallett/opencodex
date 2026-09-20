@@ -6,6 +6,8 @@ Catalog HTTP acquisition follows the [proxy-routing contract](../catalog.md#remo
 
 Refresh-lock validation covers fresh unreadable locks, descriptor-matched release, path-probe failures preserving callback outcomes, and confirmed-owner unlink error handling in `tests/codex-integration/codex-account-store.test.ts`; the [catalog contract](../catalog.md#accounts-namespaces-and-pool-rotation) explicitly does not promise atomic compare-and-delete. Cooperating lock metadata changes serialize through the existing SQLite mutation transaction; release keeps the descriptor open through identity comparison and any unlink, then closes it. Failed metadata writes remove only a matching owned path after successful coordination; unknown identity, failed probes or unavailable coordination retain the path for stale recovery. Async refresh work holds no metadata transaction.
 
+The CLI documents explicit Windows x64 installation observation separately from updates; observation never grants installation authority. See the [read-only observation contract](../runtime.md#explicit-codex-cli-installation-observation).
+
 The configuration-only [plaintext V2 contract](../subagents.md#plaintext-v2-agent-messages)
 is scoped to canonical ChatGPT Responses forwarding; other source-area behavior described here is unchanged. CLI installation inspection reason codes, including Windows deferral, follow the [runtime inspection contract](../runtime.md#lifecycle).
 
@@ -23,13 +25,38 @@ Native main reauthentication follows the [CLI JSON output contract](../runtime.m
 
 The Codex restart command follows the [CLI restart scope contract](../runtime.md#cli-codex-restart-scope).
 
+The account reference documents the [Orca source-owned import](../codex-home.md#orca-source-owned-account-import).
+Its local-only command is declared in `src/cli/capabilities.ts`, and the generated skill surface
+lists its required source/registry paths and preview/apply flags.
+
 ## Public docs
+
+The provider configuration reference and provider guide own the public Google tool-schema policy:
+the persisted values/default, initial refusal, non-direct repair withholding, direct no-repair
+behavior, and content-free diagnostics. English and all translated copies change together.
 
 The public documentation site lives in `docs-site/` and is built with Astro + Starlight. English is
 served at the site root, with Korean under `/ko`, Simplified Chinese under `/zh-cn`, Traditional Chinese under `/zh-tw`, Russian under `/ru`, and Japanese under `/ja`. `docs-site/astro.config.mjs` is the locale source of truth.
 
+Server-configuration credential rows in English and every locale copy distinguish data-plane `apiKeys` from the independent management admin credential and link the matching locale management reference. Credential setup instructions themselves stay in the management reference; the rows only name the separation.
+
+Proxy-format, adapter, and provider documentation distinguishes server-level SOCKS5 configured outbound fetch from scheme-specific HTTP(S) routing, and every locale copy carrying that claim stays aligned. The public pages own the runtime detail rather than duplicating it here.
+
 Manual navigation is defined in `docs-site/astro.config.mjs`. When adding a public page, update the
 sidebar and either add localized copies or intentionally accept Starlight fallback behavior.
+
+Provider preset totals are recounted from the current registry when a preset lands. The
+documented split is 95 total: 79 key-based, 12 OAuth, three local, and one default
+ChatGPT-forward preset. The English provider guide, all seven translated copies, and all eight
+quickstarts carry the same counts, and the guides carry the same fixed-host discovery limits.
+
+That recount is no longer a manual obligation. Seventeen places restate these numbers and sixteen
+of them drifted once already — the English guide reached 95 while every translation and every
+quickstart, the English one included, still said 94. Both numbers read as plausible, so nothing
+caught it. `tests/ci-workflows/docs-provider-preset-counts.test.ts` now derives the total and the
+key-based split from `PROVIDER_REGISTRY` and asserts them against each page, so the next preset
+fails every locale at once instead of drifting. Each page is located by a locale-specific phrase
+rather than by its number, so rewording a sentence fails the check and asks to be re-anchored.
 
 Native retirement keeps active model/quota instructions aligned across locales with the
 [catalog contract](../catalog.md#shared-catalog). Historical records and other providers
@@ -37,6 +64,11 @@ sharing a model-name fragment remain distinct from current Codex-native support.
 
 The Remote Hub guide distinguishes selected-runtime readiness from general runtime diagnostics;
 `tests/cli/cli-connect-readiness.test.ts` exercises that boundary and general status's single discovery pass with isolated executable fixtures.
+
+The provider guide's OrcaRouter login section in English and all seven translated sources follows
+the [bounded ingestion contract](../transports/inventory.md#bounded-response-ingestion-and-orcarouter-login):
+64 KiB of valid UTF-8 JSON and one 30-second deadline covering headers and body. These are login
+limits, so the public guide does not apply them to inference payloads.
 
 ## GitHub Pages
 
@@ -77,14 +109,15 @@ container bootstrap helper, but still publishes no registry image. The source bu
 base by multi-platform digest, runs non-root with a read-only root filesystem and dropped
 capabilities, publishes the data port on host loopback by default (remote binding is an explicit
 `OPENCODEX_BIND_ADDRESS` opt-in), persists `OPENCODEX_HOME`, and streams the initial data token through stdin into the
-owner-only canonical token file. Before every image build, operators run
-`bun scripts/generate-compatibility-version.ts` in the host Git checkout. The runtime copies
-that untracked JSON artifact without including `.git` in the Docker context or changing the
-generator's tracked-source authority. `docker/verify-compatibility.ts` rejects stale manifests
-by comparing all file hashes and the complete source inventory in the read-only build context
-and copied runtime tree. It rejects symlinks, missing/mismatched entries, and extra source files.
+owner-only canonical token file. A build-only manifest stage uses Git metadata from a read-only
+context mount to run `scripts/generate-compatibility-version.ts`; remote Git contexts retain that
+metadata through `BUILDKIT_CONTEXT_KEEP_GIT_DIR=1`. A verified host-generated artifact remains a
+compatible input. No `COPY` includes `.git`, and the Git executable does not reach the runtime stage.
+`docker/verify-compatibility.ts` compares all file hashes and the complete source inventory in the
+read-only build context before source copy and again in the copied runtime tree. It rejects symlinks,
+missing/mismatched entries, and extra source files.
 The required roots are `package.json`, `bun.lock`, and `scripts/model-metadata.source.json`;
-the context admits only that exact scripts artifact.
+the context also admits the canonical generator, while the runtime includes only the metadata source.
 Operators must still prove liveness, readiness, authenticated
 catalog access, and a real routed response before promotion.
 
@@ -145,6 +178,12 @@ invariants belong in `structure/`, not the README.
 `docs/` contains investigations and diagnostic notes. Do not treat it as the current public user
 manual. When an investigation graduates into a maintained invariant, summarize it here under
 `structure/` and link public workflows from `docs-site/`.
+
+Cross-cutting structure contracts are maintained by editing `structure/manifest.json`, the authority
+statement, and any dependent whose local explanation changes. Regenerate `structure/INDEX.md` with
+the owning command and require the structure check in hosted CI. The
+[structure rules](../AGENTS.md#the-source-to-doc-map) retain review of every document mapped to a
+changed source area even when no text edit is needed.
 
 ## Branch and devlog policy
 
@@ -367,7 +406,7 @@ and its matching-cache or `unavailable` result.
 
 The Remote Hub guide and affected CLI, server-config, management-API, and dashboard references have eight sources: root English plus `fr`, `ko`, `zh-cn`, `zh-tw`, `ru`, `ja`, and `tr`. English is canonical; commands, defaults, endpoint auth, and warnings remain exact in translations. A release requires the remote-only focused/full gates, privacy scan, GUI/docs builds, protocol compatibility receipts, and the MAINTAINERS security review for the exact head.
 
-Codex display-cache expiry, retained main-policy evidence, and reset history follow the
+Codex display-cache expiry, retained blocking main-policy evidence, and reset history follow the
 [quota cache contract](../providers/openai-tiers.md#quota-cache-and-short-window-history).
 
 The account CLI and translated Codex integration guides follow the [automatic plan exclusion contract](../providers/openai-tiers.md#automatic-pool-plan-exclusions), including all-excluded pools and explicit routes.
@@ -393,13 +432,11 @@ its defaults and exclusions are owned by [Responses transport](../transports/res
 
 Provider configuration documents distinguish actual summaries from raw reasoning content. The test layout registers the summary-default contract cases and removes the obsolete content-rewrite test with its implementation.
 
-## Paginated history writer boundary
-
-`src/codex/history-provider.ts` refuses external writes to paginated or migration-capable history. `src/codex/inject.ts` checks affected rows and manifest-owned restore targets before and after config/profile/journal changes, including successful journal and fallback restores, and compensates refused restore/removal transitions. Failed config restore stops later catalog/history work and rolls back a coordinated remove transition. Apply retains an existing provider definition before candidate admission even when history preflight passes, so migration after artifact commit or during worker startup cannot leave earlier conversations without their provider. See the [history writer contract](../codex-home.md#paginated-history-writer-boundary) for guarantees and concurrent-writer limits.
+Paginated and migration-capable history follows the [authoritative writer contract](../codex-home.md#paginated-history-writer-boundary); this document adds no independent writer guarantee.
 
 Private pool credential metadata follows the [quota-history publication identity contract](../providers/openai-tiers.md#quota-history-publication-identity); credential-only and account DTO projections omit it.
 
-Codex pool settings and their consumers follow the [reset-first ordering contract](../providers/openai-tiers.md#reset-first-account-ordering), including independent-quota fallback and preserved affinity.
+Codex pool settings and their consumers follow the [reset-first ordering contract](../providers/openai-tiers.md#reset-first-account-ordering), including independent-quota fallback, preserved affinity, strategy-specific threshold summaries, and shared short-observation freshness for switch warnings.
 
 Hub/browser pairing instructions distinguish machine enrollment, session authentication, permission denial and network failure. The hosted dashboard preview is the render artifact used to review these states.
 The integrations guide documents Cline CLI as a two-file, loopback-only integration. Hosted CI validates its source-backed fixtures; the packaged dashboard exposes it through the existing client list.
@@ -415,7 +452,7 @@ Account quota surfaces use [safe probe diagnostics](../transports/inventory.md#a
 
 Combo child requests normalize effort and thinking controls against the selected target while retaining reasoning summaries; strict unknown targets preserve caller controls. The [Responses transport owner](../transports/responses.md) documents this boundary, and native Chat removes effort only for an explicit empty declaration or no-reasoning model.
 
-Translated Chat request construction uses the [inline-image budget](../transports/streaming-health.md#translated-chat-inline-image-budget); the shared normalizer counts retained bytes even when a wire-specific drop callback keeps the image attached.
+Translated Chat request construction uses the [inline-image budget](../transports/streaming-health.md#translated-chat-inline-image-budget); the shared normalizer counts retained bytes even when a wire-specific drop callback keeps the image attached, rejects inputs above the safe decoded-pixel ceiling, caps native decode work process-wide, and stops queued work when the request is cancelled.
 
 OpenCode launcher verification distinguishes the local management catalog request from the inference child. Its transport regressions cover proxy environment, redirects, endpoint validation, credential precedence and child-env separation on hosted CI.
 
@@ -430,3 +467,6 @@ Renamed fixed-key providers receive [missing reasoning metadata](../catalog.md#r
 Shared response-log retention and native SSE inspection pacing follow the [bounded inspection contract](../transports/byte-accounting.md#response-log-inspection); other subsystem behavior remains unchanged.
 
 Native steering generation overrides, explicit public-API eligibility and the consent-gated wire probe follow the [shared control contract](../transports/streaming-health.md#steering-settings-public-api-and-diagnostic-probe); this owner does not change routing or execute diagnostic tools.
+
+The public server configuration reference documents the optional
+[compaction routing override](../transports/responses.md#compaction-routing-overrides). Its regression file is registered in both test-layout inventories.

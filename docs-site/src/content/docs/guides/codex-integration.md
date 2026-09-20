@@ -370,6 +370,12 @@ disk, and entry ceilings; this does not recover history the client no longer has
 must handle the error explicitly and resend their full context without `previous_response_id`.
 Retrying only the same ID cannot recover missing state.
 
+The same refusal applies when the referenced state belongs to a different client task scope,
+including when the new request appears to carry complete input. The proxy cannot prove that input
+is complete, so it does not silently remove `previous_response_id` or reveal whether matching state
+exists. Retry with the complete conversation and omit `previous_response_id`; matching scopes and
+legacy continuations where both scopes are absent or blank continue to replay normally.
+
 The same recovery signal applies to every routed destination, because only the native Responses
 passthrough can answer a turn whose history this proxy lost — it forwards `previous_response_id`
 to a backend that stored the chain. Every other wire rebuilds the conversation from each request's
@@ -799,6 +805,20 @@ snapshot:
 
 Normal picker behavior returns when the 5-hour window resets.
 
+**What the proxy answers while that state holds.** Once the app has collapsed the picker it sends
+`gpt-reserve`, and without the [authless Desktop opt-in](#authless-codex-desktop-opt-in) opencodex
+holds no Reserve entitlement to send with it. That request used to be forwarded as an ordinary
+native model and come back as the upstream's own `The usage limit has been reached`, which names
+neither the real cause nor the setting that would change it. It is now refused locally with an HTTP
+400 that says `codexDesktopAuthless` is off and gives the command that turns it on
+(`ocx system settings --desktop-authless on`). Nothing is sent upstream and no quota is spent.
+
+The refusal is deliberately narrow. It applies only to `gpt-reserve` on a loopback-admitted request
+that would reach the canonical ChatGPT forward route. A `gpt-reserve` selector an operator has
+aliased or routed onto another provider keeps working, a request admitted on a non-loopback listener
+still forwards, and a proxy running in the `client` runtime role is unchanged. Enabling the opt-in
+restores the normal Reserve path rather than the refusal.
+
 ## The subagent picker
 
 Catalog sync makes the selected sub-agent models available to Codex; see [Codex App model picker](/guides/codex-app-models/#subagent-selection) for picker ordering and [Sub-agent Surface](/guides/sub-agent-surface/) for v1/base/v2 delegation and fallback behavior.
@@ -814,6 +834,10 @@ If the new OAuth credential's authenticated usage lookup confirms an exhausted 5
 `ocx account refresh openai` and `ocx account list openai --quota --refresh` only read usage. Model validation spends quota and requires a human dashboard session: open `ocx gui` and click **Refresh quotas** after recovery. For a headless host, access its dashboard from your browser; an admin token alone does not authorize validation. Validation can complete while an account is paused without resuming or selecting it. Model authorization failures remain visible until successful validation or reauthentication clears them.
 
 Background revalidation is separate and off by default. It requires Token Guardian, the `openai` provider's `proactive` refresh policy, and `tokenGuardian.codexWarmupEnabled`. It skips accounts awaiting deferred registration validation.
+
+### Cancelling main-account device reauthentication
+
+When cancelling main-account device reauthentication, a temporary DELETE or network failure, or a response with an unknown or nonterminal status, keeps the active flow and the cancellation-failure indication so cancellation can be retried. Status polling normally continues so a login that completes can still be detected. If a retryable cancellation failure overlaps a non-2xx GET status response while the flow is `pending` or `committing`, either response order preserves cancellation retry on that same flow, with its last server-provided device code, verification URL, and phase. The GET HTTP failure still stops polling, but cancellation can be retried without starting a second login POST. A terminal `failed` response releases the flow and displays the normalized failure reason; only `succeeded` reports login success. A confirmed `cancelled` response releases the flow so a new device login can be started. A definitive HTTP 404 response with code `unknown_flow` also releases the expired flow ID so a new device login can be started, but does not report a successful login or confirmed cancellation. Late POST, GET, or DELETE responses from an earlier flow cannot change the new flow or report login success for it.
 
 ### Why an account stopped serving requests
 
