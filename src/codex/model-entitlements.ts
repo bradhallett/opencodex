@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import type { CodexAccountCredentialRecord, OcxConfig } from "../types";
 import { isSelectableCodexPoolAccount } from "./account-id";
-import { getValidCodexToken, loadCodexAccountRecordSnapshot } from "./account-store";
+import {
+  beginCodexAccountGenerationLiveCheck,
+  getValidCodexToken,
+  loadCodexAccountRecordSnapshot,
+} from "./account-store";
 import {
   getMainAccountToken,
   getValidMainAccountToken,
@@ -17,6 +21,14 @@ import { loadPersistedCodexRuntime } from "./runtime";
 import { codexRuntimeStateEpoch } from "./runtime";
 import upstreamModelsSnapshot from "./data/upstream-models.json";
 import { codexCredentialMutationEpoch } from "./credential-mutation-epoch";
+import {
+  clearObservedCodexModelDenial,
+  forgetObservedCodexModelDenialsForAccount,
+  observedDeniedCodexAccountIdsForModel,
+  recordObservedCodexModelDenial,
+  setObservedDenialGenerationCheck,
+  resetObservedCodexModelDenialsForTests,
+} from "./observed-model-denials";
 
 const CODEX_MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models";
 
@@ -870,6 +882,11 @@ function needsEntitlementRefresh(
   const cached = accountModelsCache.get(cacheKeyFor(accountId, clientVersion));
   if (cached && cached.credentialIdentity !== credentialIdentity) {
     invalidateCodexModelEntitlementsForAccount(accountId);
+    // The credential itself changed, so evidence gathered under the previous one answers for a
+    // different subscription. This is the only call site that knows that: the two gated-model
+    // sites in `core-codex-account.ts` invalidate a STALE roster for an unchanged credential,
+    // and clearing observed refusals there would discard the very evidence #4906 is about.
+    forgetObservedCodexModelDenialsForAccount(accountId);
   } else if (cached && cached.expiresAt > now) {
     return false;
   }
@@ -1280,15 +1297,75 @@ export function cachedDeniedCodexAccountIdsForModel(
     if (state === "granted") granted.add(accountId);
     else if (state === "denied") denied.add(accountId);
   }
+  // The roster is not the only evidence, and on this path it is usually the weaker one. A cached
+  // roster expires in five minutes and nothing on the flagship request path refetches it, so
+  // absent an ongoing catalog sync the loop above contributes nothing at all. An upstream
+  // refusal does not expire on that schedule and is not a snapshot of a pending answer: it is
+  // the account's own Codex surface naming this model and declining it (#4906).
+  // The caller's read fence is passed IN rather than applied to the result, so an excluded
+  // account is skipped before the credential-generation validation reads account storage
+  // (#4952). An excluded account must stay UNKNOWN rather than denied, so a profile switch or
+  // a request-owned credential produces the same selection it does today.
+  const observedDenied = observedDeniedCodexAccountIdsForModel(modelId, now, {
+    ...(options.excludeAccountIds ? { excludeAccountIds: options.excludeAccountIds } : {}),
+  });
+  for (const accountId of observedDenied ?? []) denied.add(accountId);
   // One account holds one entry per client version, and upstream filters the roster by that
   // version. So the same account can legitimately carry a granted entry under a current client
   // and a denied one under an older client that predates the model. Positive evidence is
   // authoritative regardless of which version asked for it -- the same rule
   // `codexModelEntitlementStateForRoster` applies within a single entry -- so a grant anywhere
   // clears the denial rather than being outvoted by whichever entry the map happened to yield
-  // last.
+  // last. It outranks an observed refusal for the same reason: a confirmed roster that lists the
+  // model is the newer answer, and a rollout that reaches an account must not be held back by a
+  // refusal it has already superseded.
   for (const accountId of granted) denied.delete(accountId);
   return denied.size > 0 ? denied : undefined;
+}
+
+/**
+ * Record an authenticated upstream refusal as this account's own evidence about `modelId`.
+ *
+ * Scoped to {@link ENTITLEMENT_PREFERRED_NATIVE_OPENAI_MODELS} because that is the set whose
+ * availability varies per account while the row stays visible, and it is the set
+ * {@link cachedDeniedCodexAccountIdsForModel} will read back. A model outside it either has no
+ * per-account variance or is gated by the fail-closed roster path, where an ordering preference
+ * would change nothing.
+ *
+ * The caller must have matched the exact allow-listed refusal body first. A status alone is not
+ * admissible here: 400 covers every malformed request too, and remembering one of those as an
+ * entitlement fact would steer routing away from a perfectly capable account.
+ */
+// Denial evidence is credential-scoped (#4952). The store stays a leaf module, so the
+// liveness predicate is injected here, where the account store is already a dependency.
+setObservedDenialGenerationCheck(beginCodexAccountGenerationLiveCheck);
+
+export function recordCodexModelDenialEvidence(
+  accountId: string | null | undefined,
+  modelId: string | undefined,
+  generation: number | null | undefined,
+  now = Date.now(),
+): void {
+  if (!accountId || !modelId) return;
+  if (!ENTITLEMENT_PREFERRED_NATIVE_OPENAI_MODELS.has(modelId)) return;
+  // A caller that cannot name a credential generation records ACCOUNT-scoped evidence rather
+  // than none. The one production context in that position is `main-pool`, whose credential
+  // lives in `auth.json` and has no pool generation; discarding its refusals would revert
+  // #4906 for the stored main login (#4952). Request-owned `main` never reaches here — its
+  // `accountId` is null and the guard above returns.
+  recordObservedCodexModelDenial(accountId, modelId, typeof generation === "number" ? generation : undefined, now);
+}
+
+/** Drop the refusal evidence for a pair the account has just served successfully. */
+export function clearCodexModelDenialEvidence(
+  accountId: string | null | undefined,
+  modelId: string | undefined,
+  generation: number | null | undefined,
+): void {
+  if (!accountId || !modelId) return;
+  // Mirror of the write: an account-scoped success clears account-scoped evidence. It cannot
+  // clear a credential-scoped entry that names a newer generation, and vice versa (#4952).
+  clearObservedCodexModelDenial(accountId, modelId, typeof generation === "number" ? generation : undefined);
 }
 
 /** Synchronous projection for management/catalog readers after a discovery pass. */
@@ -1351,6 +1428,7 @@ export function resetCodexModelEntitlementCacheForTests(): void {
   negativeCredentialMemo.clear();
   entitlementEnsureFlights.clear();
   runtimeVersionMemo = null;
+  resetObservedCodexModelDenialsForTests();
 }
 
 /** Test-only snapshot for proving publication fences, which cache lookup intentionally masks. */

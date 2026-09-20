@@ -15,6 +15,7 @@ import { removeTreeWithRetry } from "../helpers/remove-tree";
 const repoRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
 setDefaultTimeout(SPAWN_BUDGET_MS);
+console.error('ocx-startup-diagnostic:{"file":"codex-inject-integration","phase":"file_imported"}');
 
 // Reads back what a TOML consumer would see for a top-level string key. A Windows path
 // is stored with escaped separators, so the raw file text never contains the unescaped path.
@@ -82,8 +83,10 @@ describe("injectCodexConfig integration (Design B)", () => {
   let ocxHome: string;
 
   beforeEach(() => {
+    console.error('ocx-startup-diagnostic:{"file":"codex-inject-integration","phase":"before_each_entered"}');
     codexHome = realpathSync.native(mkdtempSync(join(tmpdir(), "ocx-inject-codex-")));
     ocxHome = realpathSync.native(mkdtempSync(join(tmpdir(), "ocx-inject-home-")));
+    console.error('ocx-startup-diagnostic:{"file":"codex-inject-integration","phase":"before_each_ready"}');
   });
 
   afterEach(() => {
@@ -102,7 +105,9 @@ describe("injectCodexConfig integration (Design B)", () => {
       const { resolveCodexStateDbPath } = require("./src/codex/paths");
       const enabled = await injectCodexConfig(10100, {});
       if (!enabled.success) throw new Error("fixture injection failed");
-      const dbPath = join(process.env.CODEX_HOME, "state_5.sqlite");
+      // Match the runtime authority: Windows Temp may spell CODEX_HOME with an 8.3 alias,
+      // while getCodexHome resolves its long path. Manifest names bind to that path spelling.
+      const dbPath = require("./src/codex/paths").resolveCodexStateDbPath();
       const rollout = join(process.env.CODEX_HOME, "manifest-fixture.jsonl");
       fs.appendFileSync(join(process.env.CODEX_HOME,"config.toml"), [
         "# Auto-injected by opencodex",
@@ -133,7 +138,7 @@ describe("injectCodexConfig integration (Design B)", () => {
       console.log(JSON.stringify({entries,defaultEntries,result,provider,config,historyPreserved:historyPaths.every((p,i)=>fs.readFileSync(p,"utf8")===beforeHistory[i])}));
     `;
     const child = spawnSync(process.execPath, ["--eval", script], {
-      cwd: repoRoot, env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
+      cwd: repoRoot, env: { ...process.env, CODEX_HOME: codexHome, CODEX_SQLITE_HOME: "", OPENCODEX_HOME: ocxHome },
       encoding: "utf8", timeout: SPAWN_BUDGET_MS - 5_000,
     });
     expect(child.status, child.stderr).toBe(0);
@@ -166,6 +171,7 @@ describe("injectCodexConfig integration (Design B)", () => {
   const unreadablePreimages =
     process.platform === "win32" || process.getuid?.() === 0 ? test.skip : test;
   unreadablePreimages("unreadable preimages abort capture and remain visible as compensation failures", () => {
+    console.error('ocx-startup-diagnostic:{"file":"codex-inject-integration","phase":"unreadable_preimages_entered"}');
     const script = `
       const fs = require("node:fs");
       const { join } = require("node:path");
@@ -198,10 +204,41 @@ describe("injectCodexConfig integration (Design B)", () => {
       allow();
       console.log(JSON.stringify({unreadable,captureCode,restored,outcomes,unchangedAfterEach,preserved}));
     `;
+    console.error('ocx-startup-diagnostic:{"file":"codex-inject-integration","phase":"unreadable_preimages_setup_complete"}');
+    const childStartedAt = performance.now();
+    console.error(`ocx-startup-diagnostic:${JSON.stringify({
+      file: "codex-inject-integration",
+      phase: "unreadable_preimages_child_started",
+      deadlineMs: SPAWN_BUDGET_MS - 5_000,
+    })}`);
     const child = spawnSync(process.execPath, ["--eval", script], {
       cwd: repoRoot, env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
       encoding: "utf8", timeout: SPAWN_BUDGET_MS - 5_000,
     });
+    const elapsedMs = Math.min(600_000, Math.max(0, Math.round(performance.now() - childStartedAt)));
+    const status = typeof child.status === "number"
+      && Number.isSafeInteger(child.status)
+      && child.status >= 0
+      && child.status <= 255
+      ? child.status
+      : null;
+    const signal = child.signal === null
+      ? null
+      : child.signal === "SIGTERM" || child.signal === "SIGKILL"
+        ? child.signal
+        : "OTHER";
+    const rawErrorCode = child.error && "code" in child.error
+      ? String((child.error as NodeJS.ErrnoException).code ?? "")
+      : "";
+    const errorCode = rawErrorCode === "" ? null : rawErrorCode === "ETIMEDOUT" ? "ETIMEDOUT" : "OTHER";
+    console.error(`ocx-startup-diagnostic:${JSON.stringify({
+      file: "codex-inject-integration",
+      phase: "unreadable_preimages_child_returned",
+      elapsedMs,
+      status,
+      signal,
+      errorCode,
+    })}`);
     expect(child.status, child.stderr).toBe(0);
     expect(JSON.parse(child.stdout)).toEqual({
       unreadable: true, captureCode: "EACCES", restored: { complete: false, unrestored: ["profile"] }, outcomes: [true, true, true], unchangedAfterEach: [true, true, true], preserved: true,
@@ -745,6 +782,28 @@ describe("injectCodexConfig integration (Design B)", () => {
     expect(finalConfig).toContain("[model_providers.opencodex]");
     expect(readFileSync(rolloutPath, "utf8")).toBe(rolloutBytes);
     expect(restoredRowBytes).toBe(rowBytes);
+  });
+
+  test("a provider-table transition refuses rather than strand a paginated openai thread", () => {
+    const original = 'model_provider = "openai"\n# >>> opencodex managed openai_base_url >>>\nopenai_base_url = "http://127.0.0.1:10100/v1"\n# <<< opencodex managed openai_base_url <<<\n';
+    const configPath = join(codexHome, "config.toml");
+    writeFileSync(configPath, original);
+    const rollout = join(codexHome, "openai-paginated.jsonl");
+    const bytes = JSON.stringify({ ordinal: 0, type: "session_meta", payload: { id: "fixture", history_mode: "paginated", model_provider: "openai" } }) + "\n";
+    writeFileSync(rollout, bytes);
+    const db = new Database(join(codexHome, "state_5.sqlite"));
+    db.run("CREATE TABLE threads (id TEXT, rollout_path TEXT, model_provider TEXT, history_mode TEXT)");
+    db.run("INSERT INTO threads VALUES ('fixture', ?, 'openai', 'paginated')", rollout);
+    db.close();
+
+    const result = runInject(codexHome, ocxHome, JSON.stringify({ codexDesktopAuthless: true }));
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      success: false,
+      historyPreflightFailureReason: "history_paginated_openai_requires_native_writer",
+    });
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    expect(readFileSync(rollout, "utf8")).toBe(bytes);
   });
 
   test("a paginated home still receives the model catalog path the picker reads", () => {

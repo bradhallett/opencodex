@@ -68,6 +68,12 @@ export interface OcxParsedRequest {
   _cursorConversationId?: string;
   /** Stable upstream client thread identity, used only to derive provider-scoped continuation ids. */
   _clientThreadId?: string;
+  /**
+   * This request's OWN Codex thread id (`thread-id`), as opposed to `_clientThreadId`, which
+   * carries `x-codex-parent-thread-id` and is therefore shared by every parallel child of one
+   * parent. Only a surface that must distinguish siblings should read it.
+   */
+  _codexOwnThreadId?: string;
   /** True when promptCacheKey identifies a shared cache cohort rather than one conversation. */
   _promptCacheKeyIsSharedCohort?: boolean;
   /** Cursor-only thread owner; may be an opaque process-local Desktop session/thread identity. */
@@ -120,6 +126,8 @@ export interface OcxParsedRequest {
    * (see src/responses/compaction.ts).
    */
   _compactionRequest?: boolean;
+  /** Manual compaction moved to another provider: summarize portably even on a canonical ChatGPT target. */
+  _portableCompaction?: boolean;
   /**
    * True when the current request newly introduced a stored compaction summary/marker. Historical
    * markers restored by previous_response_id expansion were already acknowledged and do not reset
@@ -312,7 +320,7 @@ export interface OcxProviderContinuationState {
 }
 
 export type AdapterEvent =
-  | { type: "heartbeat" }
+  | { type: "heartbeat"; replayUnsafe?: true }
   | { type: "text_delta"; text: string; phase?: OcxMessagePhase }
   | { type: "thinking_delta"; thinking: string }
   // Anthropic extended-thinking round-trip: signature_delta for the current thinking block, and
