@@ -428,11 +428,14 @@ bridge. It uses the existing account quorum, cooldown and three-rotation request
 the complete credential/transport/replay identity, and attributes usage to the serving account.
 Single-account installs do not retry; a missing alternate credential preserves the original error.
 
-`shouldRetryCodexPoolAccountQuota` withholds that rotation when the 429 or 402 body names an
-organization- or project-scoped exhaustion (`codexScopedExhaustionCode` in
-`src/codex/quota-rejection.ts`). Every credential inside the refusing organization meets the same
-counter, so the move would pay a second cold prompt prefix for no new capacity. Withholding the
-move does not withhold the accounting: `src/server/responses/passthrough-delivery.ts` applies the
+`shouldRetryCodexPoolAccountQuota` admits that rotation when the 429 or 402 body names an
+organization- or project-scoped exhaustion because the response does not identify the refusing
+scope. After resolving an alternate, the rotation path uses `codexScopedExhaustionCode` from
+`src/codex/quota-rejection.ts` to withhold organization-level retries only when both credentials
+have the same known workspace account id. Project exhaustion remains retryable because no project
+identity is available. Credentials in distinct or unknown workspaces therefore retain failover,
+while a proven same-workspace move cannot pay a second cold prompt prefix for no new capacity.
+Withholding the move does not withhold the accounting: `src/server/responses/passthrough-delivery.ts` applies the
 response's quota headers to the serving account and records the 429 outcome on the ordinary
 delivery path, so the account still earns its cooldown and leaves the selection pool. The gate
 fails closed — an empty, truncated, unparseable, duplicate-keyed or aborted body keeps the broad
