@@ -17,11 +17,12 @@
 
 use crate::{
     auth::Auth,
+    claim,
     endpoint::ProxyEndpoint,
     first_run::{self, StartAtLogin},
     identity, ownership,
     proxy::{ProxyClient, RuntimeIdentity},
-    resolve,
+    resolve, runtime_stop,
     sidecar::{self, SidecarWatch},
     tray_availability::{self, TrayAvailability},
     AppState,
@@ -35,6 +36,7 @@ use std::{
     },
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration, Instant};
 
 /// The event the bootstrap page listens on.
@@ -95,6 +97,7 @@ pub enum Phase {
     Resolving,
     Probing,
     Attaching,
+    TakingOver,
     Starting,
     Waiting,
     Ready,
@@ -103,11 +106,12 @@ pub enum Phase {
 
 /// Every phase, in the order they run. The bootstrap page derives its checklist from this rather
 /// than restating it, so a phase cannot exist in one place and be missing from the other.
-pub const PHASES: [Phase; 8] = [
+pub const PHASES: [Phase; 9] = [
     Phase::Registering,
     Phase::Resolving,
     Phase::Probing,
     Phase::Attaching,
+    Phase::TakingOver,
     Phase::Starting,
     Phase::Waiting,
     Phase::Ready,
@@ -122,6 +126,7 @@ impl Phase {
             Self::Resolving => "resolving",
             Self::Probing => "probing",
             Self::Attaching => "attaching",
+            Self::TakingOver => "taking-over",
             Self::Starting => "starting",
             Self::Waiting => "waiting",
             Self::Ready => "ready",
@@ -135,6 +140,7 @@ impl Phase {
             Self::Resolving => "Resolving the configuration home and port",
             Self::Probing => "Looking for a runtime that is already listening",
             Self::Attaching => "Attaching to the runtime that answered",
+            Self::TakingOver => "Taking over the runtime that was already listening",
             Self::Starting => "Starting the bundled runtime",
             Self::Waiting => "Waiting for the runtime to report healthy",
             Self::Ready => "Ready",
@@ -185,6 +191,21 @@ pub struct Progress {
     pub dashboard: Option<String>,
     pub diagnostic: Option<String>,
     pub can_retry: bool,
+    /// Present only while the shell is waiting on the user's takeover decision.
+    pub consent: Option<ConsentPrompt>,
+}
+
+/// What the consent panel renders. `blocked` carries the CLI's refusal reason when a
+/// takeover cannot be offered; the panel is shown only for the offerable case today, but
+/// the field is part of the wire so a later UI does not need a schema change.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentPrompt {
+    pub endpoint: String,
+    pub port: u16,
+    pub home: String,
+    pub owner: String,
+    pub blocked: Option<String>,
 }
 
 impl Progress {
@@ -199,6 +220,7 @@ impl Progress {
             dashboard: None,
             diagnostic: None,
             can_retry: phase == Phase::Failed,
+            consent: None,
         }
     }
 }
@@ -214,8 +236,8 @@ struct Target {
 #[derive(Clone, Debug)]
 pub struct Registration {
     pub login: StartAtLogin,
-    /// This installation's own id, and what the recorded runtime owner says about it.
-    pub identity: String,
+    /// This installation's own id, minted once in the app's config directory.
+    pub install_id: Option<String>,
 }
 
 struct Live {
@@ -230,6 +252,8 @@ pub struct Startup {
     running: AtomicBool,
     /// The outcome of the one-time registration, once it has happened.
     registered: Mutex<Option<Registration>>,
+    /// The pending takeover decision, when the sequence is waiting on the user.
+    consent: Mutex<Option<oneshot::Sender<bool>>>,
 }
 
 impl Startup {
@@ -241,6 +265,7 @@ impl Startup {
             }),
             running: AtomicBool::new(false),
             registered: Mutex::new(None),
+            consent: Mutex::new(None),
         }
     }
 
@@ -265,6 +290,29 @@ impl Startup {
     /// The whole state of the run so far, which is what the page asks for when it loads.
     pub fn latest(&self) -> Progress {
         self.live().latest.clone()
+    }
+
+    /// The user's answer to a pending takeover prompt. Nothing pending is a no-op: a retry
+    /// or a late click must never be read as a decision for a prompt that is not up.
+    pub fn decide_takeover(&self, approved: bool) {
+        if let Some(sender) = self
+            .consent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            let _ = sender.send(approved);
+        }
+    }
+
+    fn await_consent(&self) -> oneshot::Receiver<bool> {
+        let (sender, receiver) = oneshot::channel();
+        *self.consent.lock().unwrap_or_else(PoisonError::into_inner) = Some(sender);
+        receiver
+    }
+
+    fn clear_consent(&self) {
+        *self.consent.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     fn restart(&self) {
@@ -322,7 +370,7 @@ pub fn begin(app: &AppHandle) {
 
 async fn run(app: &AppHandle) {
     let started = Instant::now();
-    let deadline = started + DEADLINE;
+    let mut deadline = started + DEADLINE;
     let Some(watch) = app.try_state::<AppState>().map(|state| state.watch.clone()) else {
         return;
     };
@@ -332,11 +380,7 @@ async fn run(app: &AppHandle) {
         app,
         started,
         Phase::Registering,
-        Some(format!(
-            "{}; {}",
-            registration.login.describe(),
-            registration.identity
-        )),
+        Some(registration.login.describe().to_owned()),
     );
 
     report(app, started, Phase::Resolving, None);
@@ -390,10 +434,11 @@ async fn run(app: &AppHandle) {
         started,
         Phase::Resolving,
         Some(format!(
-            "{} with a configuration home of {}, resolved by the bundled CLI {}",
+            "{} with a configuration home of {}, resolved by the bundled CLI {}; {}",
             target.endpoint.url(""),
             target.home.display(),
-            answer.cli_version
+            answer.cli_version,
+            ownership::describe(&answer.ownership, registration.install_id.as_deref())
         )),
     );
 
@@ -408,29 +453,93 @@ async fn run(app: &AppHandle) {
             }
         }),
     );
+    let mut took_over = false;
     match resolve::live_verdict(&resolution) {
         resolve::LiveVerdict::Attach => {
-            report(
-                app,
-                started,
-                Phase::Attaching,
-                Some("a runtime was already listening, so this app is a guest on it".to_owned()),
-            );
-            if bind(app, &proxy, deadline).await.is_none() {
-                fail(
-                    app,
-                    started,
-                    Some(&target),
-                    &registration,
-                    &watch,
-                    Phase::Attaching,
-                    "the runtime answered but did not identify itself, so this app did not attach"
-                        .to_owned(),
-                );
-                return;
+            // Without our own id nothing can ever match us, which is the answer Refuse gives.
+            let consent = match registration.install_id.as_deref() {
+                Some(install_id) => ownership::consent(&answer.ownership, install_id),
+                None => ownership::Consent::Refuse,
+            };
+            match attach_plan(consent, &answer.takeover) {
+                AttachPlan::Guest(detail) => {
+                    attach_as_guest(
+                        app,
+                        started,
+                        &target,
+                        &registration,
+                        &watch,
+                        &proxy,
+                        endpoint,
+                        deadline,
+                        detail,
+                    )
+                    .await;
+                    return;
+                }
+                AttachPlan::Ask(token) => {
+                    // The prompt has to be visible even when this launch started hidden.
+                    if let Some(window) = app.get_webview_window("main") {
+                        crate::window::show(&window);
+                    }
+                    let Some(startup) = app.try_state::<Startup>() else {
+                        return;
+                    };
+                    let receiver = startup.await_consent();
+                    let mut progress = Progress::new(Phase::Attaching, elapsed(started));
+                    progress.detail = Some(
+                        "a runtime was already listening; waiting for a decision on taking it over"
+                            .to_owned(),
+                    );
+                    progress.consent = Some(ConsentPrompt {
+                        endpoint: target.endpoint.url(""),
+                        port: target.endpoint.port,
+                        home: target.home.display().to_string(),
+                        owner: ownership::owner_label(&answer.ownership),
+                        blocked: None,
+                    });
+                    emit(app, progress, None);
+                    // The user may take any time; the budget exists to bound the machinery, not
+                    // the person, so the deadline moves by whatever the decision took.
+                    let asked = Instant::now();
+                    let approved = receiver.await.unwrap_or(false);
+                    deadline += asked.elapsed();
+                    startup.clear_consent();
+                    if !approved {
+                        attach_as_guest(
+                            app,
+                            started,
+                            &target,
+                            &registration,
+                            &watch,
+                            &proxy,
+                            endpoint,
+                            deadline,
+                            "a runtime was already listening and taking it over was declined, so this app is a guest on it"
+                                .to_owned(),
+                        )
+                        .await;
+                        return;
+                    }
+                    if take_over(
+                        app,
+                        started,
+                        &mut deadline,
+                        &target,
+                        &registration,
+                        &watch,
+                        &proxy,
+                        &answer.ownership,
+                        &token,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                    took_over = true;
+                }
             }
-            finish(app, started, endpoint);
-            return;
         }
         // Something holds the port and this app cannot manage it. That is not an absence, so it
         // does not authorise starting a second runtime beside it either.
@@ -448,8 +557,9 @@ async fn run(app: &AppHandle) {
         }
         resolve::LiveVerdict::NotLive => {}
     }
-    if !resolve::may_start(&resolution) {
-        // Only a proven absence authorises a start. Nothing else may fall through to one.
+    if !took_over && !resolve::may_start(&resolution) {
+        // Only a proven absence authorises a start. Nothing else may fall through to one. A
+        // takeover just proved its own absence by stopping what was there.
         fail(
             app,
             started,
@@ -548,6 +658,159 @@ async fn run(app: &AppHandle) {
     );
 }
 
+/// What an attach turns into once the recorded owner and the CLI's compatibility answer are
+/// laid next to each other. `Ask` carries the token the claim has to be made against.
+enum AttachPlan {
+    /// Stay a guest on what answered; the string is the detail the phase reports.
+    Guest(String),
+    /// Offer the takeover and wait on the user.
+    Ask(String),
+}
+
+fn attach_plan(consent: ownership::Consent, takeover: &resolve::Takeover) -> AttachPlan {
+    match consent {
+        ownership::Consent::Held => AttachPlan::Guest(
+            "a runtime was already listening and this installation already owns it".to_owned(),
+        ),
+        ownership::Consent::Refuse => AttachPlan::Guest(
+            "a runtime was already listening; its recorded owner could not be read, so this app is a guest on it and asked nothing".to_owned(),
+        ),
+        ownership::Consent::AskFirstTime | ownership::Consent::AskAgain => match takeover {
+            resolve::Takeover::Blocked { reason, detail } => AttachPlan::Guest(format!(
+                "a runtime was already listening, but taking it over is not available ({reason}: {detail}), so this app is a guest on it"
+            )),
+            resolve::Takeover::Supported { token, .. } => AttachPlan::Ask(token.clone()),
+        },
+    }
+}
+
+/// Report, bind and finish as a guest on the runtime that answered.
+#[allow(clippy::too_many_arguments)]
+async fn attach_as_guest(
+    app: &AppHandle,
+    started: Instant,
+    target: &Target,
+    registration: &Registration,
+    watch: &SidecarWatch,
+    proxy: &ProxyClient,
+    endpoint: ProxyEndpoint,
+    deadline: Instant,
+    detail: String,
+) {
+    report(app, started, Phase::Attaching, Some(detail));
+    if bind(app, proxy, deadline).await.is_none() {
+        fail(
+            app,
+            started,
+            Some(target),
+            registration,
+            watch,
+            Phase::Attaching,
+            "the runtime answered but did not identify itself, so this app did not attach"
+                .to_owned(),
+        );
+        return;
+    }
+    finish(app, started, endpoint);
+}
+
+/// Stop the runtime that answered, wait for its silence, and record this installation as
+/// the owner. An `Err` has already been reported; `Ok` means the Starting branch may run.
+#[allow(clippy::too_many_arguments)]
+async fn take_over(
+    app: &AppHandle,
+    started: Instant,
+    deadline: &mut Instant,
+    target: &Target,
+    registration: &Registration,
+    watch: &SidecarWatch,
+    proxy: &ProxyClient,
+    recorded: &ownership::Recorded,
+    token: &str,
+) -> Result<(), ()> {
+    report(
+        app,
+        started,
+        Phase::TakingOver,
+        Some("stopping the runtime that was already listening".to_owned()),
+    );
+    let stopped = runtime_stop::run(app, *deadline).await;
+    if !stopped.is_stopped() {
+        fail(
+            app,
+            started,
+            Some(target),
+            registration,
+            watch,
+            Phase::TakingOver,
+            format!(
+                "the runtime that was already listening could not be stopped: {}",
+                stopped.describe()
+            ),
+        );
+        return Err(());
+    }
+    // A reported stop is the receipt, not the silence: the port has to stop answering before
+    // the claim and the spawn can trust that nothing foreign is still holding it.
+    while Instant::now() < *deadline {
+        if !matches!(proxy.alive_within(*deadline).await, Some(Ok(_))) {
+            break;
+        }
+        sleep(POLL).await;
+    }
+    if matches!(proxy.alive_within(*deadline).await, Some(Ok(_))) {
+        fail(
+            app,
+            started,
+            Some(target),
+            registration,
+            watch,
+            Phase::TakingOver,
+            "the runtime that was already listening is still answering after the stop".to_owned(),
+        );
+        return Err(());
+    }
+
+    report(
+        app,
+        started,
+        Phase::TakingOver,
+        Some("recording this installation as the runtime owner".to_owned()),
+    );
+    let install_id = registration.install_id.clone().unwrap_or_default();
+    let argv = claim::args(&install_id, recorded, token);
+    match claim::run(app, argv, *deadline).await {
+        claim::ClaimResult::Recorded(ownership) => {
+            report(
+                app,
+                started,
+                Phase::TakingOver,
+                Some(format!(
+                    "this installation now owns the runtime (consent generation {})",
+                    ownership.consent_generation
+                )),
+            );
+            Ok(())
+        }
+        claim::ClaimResult::Failed(message) => {
+            // The runtime is stopped either way. Refusing here leaves the next launch an
+            // ordinary absence to start into, which is the acceptable end state.
+            fail(
+                app,
+                started,
+                Some(target),
+                registration,
+                watch,
+                Phase::TakingOver,
+                format!(
+                    "the runtime was stopped, but this installation could not be recorded as its owner: {message}"
+                ),
+            );
+            Err(())
+        }
+    }
+}
+
 /// Establish the app's own surface: the tray verdict, the tray, and the login item.
 ///
 /// It happens once per process. A retry re-runs the runtime half of the sequence, and running this
@@ -599,10 +862,11 @@ async fn register(app: &AppHandle, deadline: Instant) -> Registration {
     // This installation's own id, and what the recorded runtime owner says about it. The claim
     // lives in the shared service install state and the CLI is what reads it; the comparison
     // against our own id is the rule that record publishes.
-    let install_id = identity::install_id(app);
+    // This installation's own id; what the recorded runtime owner says about it is part of the
+    // resolve answer, so the identity line is written where the answer exists.
     let registration = Registration {
         login,
-        identity: ownership::describe(ownership::resolve(app).as_ref(), install_id.as_deref()),
+        install_id: identity::install_id(app),
     };
     if let Some(startup) = app.try_state::<Startup>() {
         startup.remember_registration(registration.clone());
@@ -766,7 +1030,10 @@ pub fn diagnostic(
         None => lines.push("endpoint: not resolved".to_owned()),
     }
     lines.push(format!("start at login: {}", registration.login.describe()));
-    lines.push(format!("runtime ownership: {}", registration.identity));
+    lines.push(format!(
+        "installation id: {}",
+        registration.install_id.as_deref().unwrap_or("not minted")
+    ));
     lines.push(match watch.exit() {
         Some(exit) => format!("runtime process: {}", exit.describe()),
         None => "runtime process: still running or never started".to_owned(),
@@ -800,9 +1067,52 @@ fn elapsed(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{shows_window, LaunchOrigin, Phase, AUTOSTART_FLAG, DEADLINE, PHASES, POLL};
+    use super::{
+        attach_plan, shows_window, AttachPlan, LaunchOrigin, Phase, AUTOSTART_FLAG, DEADLINE,
+        PHASES, POLL,
+    };
+    use crate::ownership::Consent;
+    use crate::resolve::Takeover;
     use crate::tray_availability::TrayAvailability;
     use tokio::time::Duration;
+
+    fn supported() -> Takeover {
+        Takeover::Supported {
+            protocol_version: 1,
+            minimum_cli_version: "2.61.0".to_owned(),
+            token: "tok".to_owned(),
+        }
+    }
+
+    fn blocked() -> Takeover {
+        Takeover::Blocked {
+            reason: "managing-cli-unsupported".to_owned(),
+            detail: "path uses 2.59.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_ask_only_arises_when_the_takeover_can_be_taken() {
+        // Held and Refuse never ask, whatever the CLI reported about compatibility.
+        assert!(matches!(
+            attach_plan(Consent::Held, &supported()),
+            AttachPlan::Guest(_)
+        ));
+        assert!(matches!(
+            attach_plan(Consent::Refuse, &supported()),
+            AttachPlan::Guest(_)
+        ));
+        match attach_plan(Consent::AskFirstTime, &supported()) {
+            AttachPlan::Ask(token) => assert_eq!(token, "tok"),
+            AttachPlan::Guest(detail) => panic!("{detail}"),
+        }
+        match attach_plan(Consent::AskAgain, &blocked()) {
+            AttachPlan::Guest(detail) => {
+                assert!(detail.contains("managing-cli-unsupported: path uses 2.59.0"))
+            }
+            AttachPlan::Ask(_) => panic!("a blocked takeover is not an offer"),
+        }
+    }
 
     #[test]
     fn only_the_autostart_argument_marks_a_login_launch() {

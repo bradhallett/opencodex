@@ -44,6 +44,12 @@ const retry = document.querySelector("#retry");
 const copy = document.querySelector("#copy");
 const copyState = document.querySelector("#copyState");
 const diagnostic = document.querySelector("#diagnostic");
+const consent = document.querySelector("#consent");
+const consentPort = document.querySelector("#consentPort");
+const consentHome = document.querySelector("#consentHome");
+const consentOwner = document.querySelector("#consentOwner");
+const takeOver = document.querySelector("#takeOver");
+const stayGuest = document.querySelector("#stayGuest");
 
 const MARKS = { done: "✓", failed: "✕", active: "…", pending: "·" };
 
@@ -79,6 +85,14 @@ function apply(progress) {
   if (!progress) return;
   headline.textContent = progress.label;
   detail.textContent = progress.detail || "";
+  consent.hidden = !progress.consent;
+  if (progress.consent) {
+    consentPort.textContent = progress.consent.port;
+    consentHome.textContent = progress.consent.home;
+    consentOwner.textContent = progress.consent.owner;
+    takeOver.disabled = false;
+    stayGuest.disabled = false;
+  }
   const failed = progress.phase === "failed";
   failure.hidden = !failed;
   retry.disabled = !progress.canRetry;
@@ -132,6 +146,18 @@ retry.addEventListener("click", async () => {
   }
 });
 copy.addEventListener("click", copyDiagnostic);
+
+// Both buttons make the same call; the only difference is the answer. Disabling both stops a
+// second click deciding a prompt the shell has already moved past.
+function decide(approved) {
+  takeOver.disabled = true;
+  stayGuest.disabled = true;
+  invoke("decide_takeover", { approved }).catch((error) => {
+    reportPageFailure("The decision could not be sent to the shell.", error);
+  });
+}
+takeOver.addEventListener("click", () => decide(true));
+stayGuest.addEventListener("click", () => decide(false));
 
 async function start() {
   if (!invoke || !listen) {
