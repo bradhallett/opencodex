@@ -57,7 +57,7 @@
           <dt>Configuration home</dt><dd id="consentHome"></dd>
           <dt>Current owner</dt><dd id="consentOwner"></dd>
         </dl>
-        <p id="consentNote">Taking over stops that runtime, starts the runtime bundled with this app, and records this app as the owner so the CLI no longer starts a runtime beside it.</p>
+        <p id="consentNote">Taking over stops that runtime, starts the runtime bundled with this app, and records this app as the owner. A CLI <code>ocx service start</code> then refuses; a plain <code>ocx start</code> from a terminal is not blocked yet.</p>
         <div class="actions">
           <button id="takeOver" type="button">Take over</button>
           <button id="stayGuest" class="secondary" type="button">Stay a guest</button>
@@ -240,6 +240,8 @@ function decide(approved) {
   takeOver.disabled = true;
   stayGuest.disabled = true;
   invoke("decide_takeover", { approved }).catch((error) => {
+    takeOver.disabled = false;
+    stayGuest.disabled = false;
     reportPageFailure("The decision could not be sent to the shell.", error);
   });
 }

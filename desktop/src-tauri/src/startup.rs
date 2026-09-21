@@ -919,16 +919,29 @@ async fn take_over(
         Some("stopping the runtime that was already listening".to_owned()),
     );
     let stopped = runtime_stop::run(app, *deadline).await;
-    // Silence, not exit 0, is the receipt: `ocx stop` reports exit 79 when the proxy stopped
-    // but history cleanup failed after it exited, and that is not a reason to keep a foreign
-    // runtime. So whatever the stop reported, the only question is whether the port went quiet.
+    // A refused connection, not exit 0 and not the probe's deadline, is the receipt: `ocx stop`
+    // reports exit 79 when the proxy stopped but history cleanup failed after it exited, and a
+    // `None` from alive_within is only the clock running out — neither is silence. So whatever
+    // the stop reported, the claim is made only once the port actively refuses.
+    let mut silent = false;
+    let mut still_answering = false;
     while Instant::now() < *deadline {
-        if !matches!(proxy.alive_within(*deadline).await, Some(Ok(_))) {
-            break;
+        match proxy.alive_within(*deadline).await {
+            Some(Err(_)) => {
+                silent = true;
+                break;
+            }
+            Some(Ok(_)) => {
+                still_answering = true;
+                sleep(POLL).await;
+            }
+            None => {
+                still_answering = false;
+                break;
+            }
         }
-        sleep(POLL).await;
     }
-    if matches!(proxy.alive_within(*deadline).await, Some(Ok(_))) {
+    if !silent {
         fail(
             app,
             started,
@@ -937,7 +950,12 @@ async fn take_over(
             watch,
             Phase::TakingOver,
             format!(
-                "the runtime that was already listening is still answering after the stop ({})",
+                "the runtime that was already listening {} ({})",
+                if still_answering {
+                    "is still answering after the stop"
+                } else {
+                    "did not go silent before the deadline"
+                },
                 stopped.describe()
             ),
         );
@@ -962,7 +980,20 @@ async fn take_over(
         Some("recording this installation as the runtime owner".to_owned()),
     );
     let install_id = registration.install_id.clone().unwrap_or_default();
-    let argv = claim::args(&install_id, recorded, token);
+    // An unknown record reaches here only off the UI path, and the claim has to refuse rather
+    // than fabricate the subject it is claiming against.
+    let Some(argv) = claim::args(&install_id, recorded, token) else {
+        fail(
+            app,
+            started,
+            Some(target),
+            registration,
+            watch,
+            Phase::TakingOver,
+            "the recorded owner could not be read, so no claim was made".to_owned(),
+        );
+        return Err(());
+    };
     match claim::run(app, argv, *deadline).await {
         claim::ClaimResult::Recorded(ownership) => {
             report(

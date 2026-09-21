@@ -59,7 +59,14 @@ impl ClaimResult {
 }
 
 /// The arguments a takeover builds from the resolve answer it was approved against.
-pub fn args(install_id: &str, recorded: &crate::ownership::Recorded, token: &str) -> Vec<String> {
+///
+/// `Recorded::Unknown` gets no argv: fabricating `--expect-none --expect-revision 0` would claim
+/// against a subject nobody approved, so the answer is None and the caller refuses.
+pub fn args(
+    install_id: &str,
+    recorded: &crate::ownership::Recorded,
+    token: &str,
+) -> Option<Vec<String>> {
     let mut argv = vec![
         "service".to_owned(),
         "claim".to_owned(),
@@ -92,19 +99,16 @@ pub fn args(install_id: &str, recorded: &crate::ownership::Recorded, token: &str
                 revision.to_string(),
             ]);
         }
-        // A takeover is only offered when the record was read; unknown never reaches here.
-        crate::ownership::Recorded::Unknown { .. } => {
-            argv.push("--expect-none".to_owned());
-            argv.push("--expect-revision".to_owned());
-            argv.push("0".to_owned());
-        }
+        // A takeover is only offered when the record was read; unknown never reaches here,
+        // and refusing beats inventing an approval.
+        crate::ownership::Recorded::Unknown { .. } => return None,
     }
     argv.extend([
         "--expect-compatibility-token".to_owned(),
         token.to_owned(),
         "--json".to_owned(),
     ]);
-    argv
+    Some(argv)
 }
 
 /// Read one claim summary.
@@ -183,8 +187,8 @@ mod tests {
     fn the_arguments_carry_the_exact_approved_subject() {
         let none = args("install-a", &Recorded::None { revision: 0 }, "tok");
         assert_eq!(
-            none,
-            [
+            none.expect("argv for a read record"),
+            vec![
                 "service",
                 "claim",
                 "--owner",
@@ -207,7 +211,7 @@ mod tests {
             },
             revision: 9,
         };
-        let argv = args("install-a", &owned, "tok");
+        let argv = args("install-a", &owned, "tok").expect("a claim against a read record");
         assert!(argv
             .windows(2)
             .any(|pair| pair == ["--expect-owner", "cli"]));
@@ -220,6 +224,20 @@ mod tests {
         assert!(argv
             .windows(2)
             .any(|pair| pair == ["--expect-revision", "9"]));
+    }
+
+    #[test]
+    fn an_unread_record_gets_no_claim_rather_than_a_fabricated_one() {
+        // Nobody approved a subject the resolve could not read, so there is nothing to claim
+        // against -- and "expect none, revision 0" would be that approval invented.
+        assert!(args(
+            "install-a",
+            &Recorded::Unknown {
+                reason: "why".to_owned()
+            },
+            "tok"
+        )
+        .is_none());
     }
 
     #[test]
