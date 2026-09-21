@@ -81,8 +81,10 @@ describe("desktop install identity", () => {
       expect(state).toContain(`kind: "${kind}"`);
     }
     expect(ownership).toContain('#[serde(tag = "kind", rename_all = "lowercase")]');
-    expect(ownership).toContain("    None,");
-    expect(ownership).toContain("Owned { ownership: Claim }");
+    // Each carried revision is the record's own sequence: a later `service claim` repeats it as
+    // `expect-revision`, so the takeover is only ever made against the answer it was approved on.
+    expect(ownership).toContain("None { revision: u64 }");
+    expect(ownership).toContain("Owned { ownership: Claim, revision: u64 }");
     expect(ownership).toContain("Unknown { reason: String }");
   });
 
@@ -102,27 +104,30 @@ describe("desktop install identity", () => {
     const verdict = ownership.slice(ownership.indexOf("pub fn consent("));
     const body = verdict.slice(0, verdict.indexOf("\n}"));
     expect(body).toContain("Recorded::Unknown { .. } => Consent::Refuse");
-    expect(body).toContain("Recorded::None => Consent::AskFirstTime");
+    expect(body).toContain("Recorded::None { .. } => Consent::AskFirstTime");
   });
 
   test("the shell does not read the recorded claim itself", () => {
     // Resolving means reading every state path and failing closed on an unreadable one, a corrupt
-    // anchor and paths that disagree. That answer belongs to the CLI.
+    // anchor and paths that disagree. That answer belongs to the CLI: it arrives on the resolve
+    // document's `ownership` field, parsed by resolve.rs, and a document that does not carry it
+    // defaults to unknown rather than to nobody owning it.
     for (const leak of ["service-state", "serviceStatePaths", "read_to_string", "fs::"]) {
       expect(ownership).not.toContain(leak);
     }
-    const seam = ownership.slice(ownership.indexOf("pub fn resolve(_app: &AppHandle)"));
-    expect(seam.slice(0, 120)).toContain("None");
+    expect(ownership).not.toContain("pub fn resolve(");
+    const resolve = code(repoPath(`${SHELL}/resolve.rs`));
+    expect(resolve).toContain("pub ownership: Recorded");
   });
 
-  test("not having asked is distinct from nobody owning it", () => {
-    // Option::None means the CLI has not been asked; Recorded::None means it answered that no
-    // claim exists. Collapsing them would let a takeover proceed on a question never put.
-    expect(ownership).toContain("pub fn resolve(_app: &AppHandle) -> Option<Recorded>");
-    expect(ownership).toContain("(None, _) => ");
+  test("an unreported claim is distinct from nobody owning it", () => {
+    // A resolve document that carries no ownership field is an older bundled CLI that did not
+    // answer, not a runtime with no owner: the default has to read unknown, never none.
+    const fallback = ownership.slice(ownership.indexOf("impl Default for Recorded"));
+    expect(fallback.slice(0, 200)).toContain("Self::Unknown");
     const startup = code(STARTUP);
-    expect(startup).toContain("ownership::describe(ownership::resolve(app).as_ref()");
+    expect(startup).toContain("ownership::describe(&answer.ownership");
     expect(startup).toContain("identity::install_id(app)");
-    expect(startup).toContain('format!("runtime ownership: {}", registration.identity)');
+    expect(startup).toContain('"installation id: {}"');
   });
 });
