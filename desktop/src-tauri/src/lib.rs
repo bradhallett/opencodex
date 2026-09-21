@@ -1,4 +1,5 @@
 mod auth;
+mod claim;
 #[cfg(target_os = "macos")]
 mod companion_query;
 mod companion_usage;
@@ -116,7 +117,7 @@ impl AppState {
 
     /// Let go of a runtime that has already been drained.
     ///
-    /// Dropping the handle does not signal the process — the shell plugin installs no `Drop` — so
+    /// Dropping the handle does not signal the process ??the shell plugin installs no `Drop` ??so
     /// this releases ownership without reintroducing the `kill()` that D2 removed.
     pub fn release(&self) {
         self.confirmed.store(false, Ordering::Release);
@@ -151,8 +152,8 @@ fn hide_dashboard(app: tauri::AppHandle) {
 /// The page asks for this when it loads rather than relying only on the event stream: the first
 /// states finish in milliseconds and an event emitted before the listener exists is simply gone.
 ///
-/// It always answers with a state. Answering `None` put the one case the page cannot render — a
-/// shell with no startup state — behind a value the page silently discards, which is a frozen
+/// It always answers with a state. Answering `None` put the one case the page cannot render ??a
+/// shell with no startup state ??behind a value the page silently discards, which is a frozen
 /// window with no diagnostic and no way to tell it from a slow start.
 #[tauri::command]
 fn startup_snapshot(app: tauri::AppHandle) -> startup::Progress {
@@ -174,6 +175,17 @@ fn startup_phases() -> Vec<startup::PhaseInfo> {
 #[tauri::command]
 fn retry_startup(app: tauri::AppHandle) {
     startup::begin(&app);
+}
+
+/// The user's answer to the takeover prompt the startup sequence is waiting on.
+///
+/// The sequence holds a oneshot for exactly the duration of the prompt; a decision arriving
+/// with nothing pending is a click after the fact, and it changes nothing.
+#[tauri::command]
+fn decide_takeover(app: tauri::AppHandle, approved: bool) {
+    if let Some(startup) = app.try_state::<startup::Startup>() {
+        startup.decide_takeover(approved);
+    }
 }
 
 pub fn run() {
@@ -209,7 +221,8 @@ pub fn run() {
             hide_dashboard,
             startup_snapshot,
             startup_phases,
-            retry_startup
+            retry_startup,
+            decide_takeover
         ])
         .setup(|app| {
             app.manage(AppState::new());

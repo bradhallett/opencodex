@@ -100,7 +100,9 @@ describe("desktop startup surface", () => {
 
   test("one deadline covers the whole sequence and bounds every probe under it", () => {
     expect(startup).toContain("pub const DEADLINE: Duration");
-    expect(startup).toContain("let deadline = started + DEADLINE;");
+    // `mut` because a takeover prompt moves the ceiling by however long the user thought — the
+    // budget bounds the machinery, not the person deciding.
+    expect(startup).toContain("let mut deadline = started + DEADLINE;");
     // The budget for finding an existing runtime is the CLI's now, not a second one here: the
     // tuned probe budgets exist because a shell-side reimplementation answered "nobody is
     // listening" twice and started duplicate proxies.
@@ -228,9 +230,10 @@ describe("desktop startup surface", () => {
   test("every call into the shell can fail without leaving the page blank", () => {
     const page = readFileSync(PAGE, "utf8");
     expect(page).toContain("function reportPageFailure");
-    // Both entry points — the first load and the retry — have to catch, because either one
-    // failing silently leaves a window that says "Starting…" forever.
-    expect(page.match(/reportPageFailure\(/g) || []).toHaveLength(3);
+    // Every entry point — the first load, the retry and the takeover decision — has to catch,
+    // because any one failing silently leaves a window that says "Starting…" forever. The count
+    // includes the function definition itself.
+    expect(page.match(/reportPageFailure\(/g) || []).toHaveLength(4);
     const retry = page.slice(page.indexOf('retry.addEventListener'));
     expect(retry.slice(0, 400)).toContain("catch");
   });
