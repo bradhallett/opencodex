@@ -42,7 +42,7 @@ export interface ClaimArgs {
 
 export type ClaimParseResult = { ok: true; args: ClaimArgs } | { ok: false };
 
-function readFlag(args: string[], index: number, flag: string): string {
+function readFlag(args: string[], index: number): string {
   return args[index + 1] ?? "";
 }
 
@@ -76,7 +76,7 @@ export function parseClaimArgs(args: string[]): ClaimParseResult {
     if (arg === "--json") { json = true; continue; }
     if (arg === "--expect-none") { expectNone = true; continue; }
     if (!withValue.has(arg)) return { ok: false };
-    const value = readFlag(args, index, arg);
+    const value = readFlag(args, index);
     if (!value) return { ok: false };
     index += 1;
     switch (arg) {
