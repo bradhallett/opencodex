@@ -316,6 +316,9 @@ impl Startup {
     }
 
     fn restart(&self) {
+        // A retry during a pending consent prompt drops the sender, so the waiting run reads
+        // the decision as declined rather than pairing an old prompt with a new sequence.
+        self.clear_consent();
         let mut live = self.live();
         live.reported.clear();
         live.latest = Progress::new(Phase::Registering, 0);
@@ -735,23 +738,9 @@ async fn take_over(
         Some("stopping the runtime that was already listening".to_owned()),
     );
     let stopped = runtime_stop::run(app, *deadline).await;
-    if !stopped.is_stopped() {
-        fail(
-            app,
-            started,
-            Some(target),
-            registration,
-            watch,
-            Phase::TakingOver,
-            format!(
-                "the runtime that was already listening could not be stopped: {}",
-                stopped.describe()
-            ),
-        );
-        return Err(());
-    }
-    // A reported stop is the receipt, not the silence: the port has to stop answering before
-    // the claim and the spawn can trust that nothing foreign is still holding it.
+    // Silence, not exit 0, is the receipt: `ocx stop` reports exit 79 when the proxy stopped
+    // but history cleanup failed after it exited, and that is not a reason to keep a foreign
+    // runtime. So whatever the stop reported, the only question is whether the port went quiet.
     while Instant::now() < *deadline {
         if !matches!(proxy.alive_within(*deadline).await, Some(Ok(_))) {
             break;
@@ -766,9 +755,23 @@ async fn take_over(
             registration,
             watch,
             Phase::TakingOver,
-            "the runtime that was already listening is still answering after the stop".to_owned(),
+            format!(
+                "the runtime that was already listening is still answering after the stop ({})",
+                stopped.describe()
+            ),
         );
         return Err(());
+    }
+    if !stopped.is_stopped() {
+        report(
+            app,
+            started,
+            Phase::TakingOver,
+            Some(format!(
+                "the runtime that was already listening stopped answering (stop reported: {})",
+                stopped.describe()
+            )),
+        );
     }
 
     report(
@@ -1068,8 +1071,8 @@ fn elapsed(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        attach_plan, shows_window, AttachPlan, LaunchOrigin, Phase, AUTOSTART_FLAG, DEADLINE,
-        PHASES, POLL,
+        attach_plan, shows_window, AttachPlan, LaunchOrigin, Phase, Startup, AUTOSTART_FLAG,
+        DEADLINE, PHASES, POLL,
     };
     use crate::ownership::Consent;
     use crate::resolve::Takeover;
@@ -1089,6 +1092,19 @@ mod tests {
             reason: "managing-cli-unsupported".to_owned(),
             detail: "path uses 2.59.0".to_owned(),
         }
+    }
+
+    #[test]
+    fn a_retry_drops_a_prompt_the_run_is_still_waiting_on() {
+        // The waiting run reads the dropped sender as declined, so a stale prompt can never
+        // pair a decision meant for it with the retried sequence.
+        let startup = Startup::new();
+        let mut receiver = startup.await_consent();
+        startup.restart();
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
     }
 
     #[test]
