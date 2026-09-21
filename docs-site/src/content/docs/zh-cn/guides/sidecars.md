@@ -72,6 +72,16 @@ OAuth 账户时使用 `anthropic`，否则使用 `openai`。显式选择 `anthro
 Dashboard 和管理 API 都使用 `gpt-5.6-luna` 作为回退。启动时仍会把明确保存的旧
 `gpt-5.4-mini` 值迁移到 `gpt-5.6-luna`；该迁移只作用于已保存值，不适用于缺失的 model 字段。
 
+OpenCode Go 的 `deepseek-v4.1-flash` 在 Zen Go 网关上接受 `image_url` 输入，现已声明原生 `text` 与
+`image` 模态，因此新的 `opencode-go` 行会直接向它发送图像，而不是经过此 sidecar。同一网关上的兄弟
+模型 `deepseek-v4-flash` 仍返回 HTTP 400 "Model only supports text input"，继续由 sidecar 支持；
+`opencode-zen` 与 `opencode-free` 档位保持既有分类。registry 元数据只填补缺失值，因此在此修正之前
+保存的 `opencode-go` provider 行会保留其已保存的 override，并继续把 `deepseek-v4.1-flash` 路由到此
+sidecar。要在这类行上启用原生视觉，请从该 provider 的 `noVisionModels` 列表中移除
+`deepseek-v4.1-flash`，并删除 `~/.opencodex/config.json` 中其已保存的 `modelInputModalities`
+`["text"]` 条目，或者删除并重新添加该 preset。`ocx provider edit opencode-go --model
+deepseek-v4.1-flash --text-only` 会通过 `modelCapabilities` 恢复该限制，其优先级高于上述所有声明。
+
 - 图像可以来自 user、developer 和 tool-result message，也包括 Codex 的 `view_image` 结果。
 - OpenAI 路径（ChatGPT 登录透传）会通过 Responses 端点把每张图像发送给配置的视觉模型，并携带所选
   的 `reasoning.effort`（默认为 `low`），描述结果就地替换图像部分。Anthropic 路径走 Messages

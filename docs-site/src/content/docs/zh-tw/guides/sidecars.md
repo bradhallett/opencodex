@@ -72,6 +72,16 @@ OAuth 帳號時使用 `anthropic`，否則使用 `openai`。明確選擇 `anthro
 `gpt-5.6-luna`，啟動時也會把明確儲存的舊 `gpt-5.4-mini` 值遷移到 Luna。只有在
 `visionSidecar.model` 欄位不存在或為空字串時，vision 執行路徑才會使用程式碼中的 `gpt-5.6-luna` 回退值。
 
+OpenCode Go 的 `deepseek-v4.1-flash` 在 Zen Go 閘道上接受 `image_url` 輸入，現已宣告原生 `text` 與
+`image` 模態，因此新的 `opencode-go` 列會直接向它傳送圖像，而不是經過此 sidecar。同一閘道上的兄弟
+模型 `deepseek-v4-flash` 仍回應 HTTP 400 "Model only supports text input"，繼續由 sidecar 支援；
+`opencode-zen` 與 `opencode-free` 層級維持既有分類。registry 元資料只填補缺失值，因此在此修正之前
+儲存的 `opencode-go` provider 列會保留其已儲存的 override，並繼續把 `deepseek-v4.1-flash` 路由到此
+sidecar。要在這類列上啟用原生視覺，請從該 provider 的 `noVisionModels` 清單中移除
+`deepseek-v4.1-flash`，並刪除 `~/.opencodex/config.json` 中其已儲存的 `modelInputModalities`
+`["text"]` 條目，或刪除並重新加入該 preset。`ocx provider edit opencode-go --model
+deepseek-v4.1-flash --text-only` 會透過 `modelCapabilities` 還原該限制，其優先序高於上述所有宣告。
+
 - 圖像可以來自 user、developer 和 tool-result message，也包括 Codex 的 `view_image` 結果。
 - 每張圖像會以 `reasoning.effort: "low"` 傳送給設定的原生 vision 模型，描述結果會就地替換
   圖像部分。

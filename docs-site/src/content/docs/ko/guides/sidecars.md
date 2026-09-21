@@ -82,6 +82,18 @@ OpenAI 실행 경로, Dashboard, 관리 API는 `gpt-5.6-luna`를 폴백으로 �
 저장된 기존 `gpt-5.4-mini` 값은 계속 `gpt-5.6-luna`로 마이그레이션되지만, 이 마이그레이션은 저장된
 값에만 적용되고 모델 필드가 없는 경우에는 적용되지 않습니다.
 
+OpenCode Go의 `deepseek-v4.1-flash`는 Zen Go 게이트웨이에서 `image_url` 입력을 받아들이고 이제
+네이티브 `text`와 `image` 모달리티를 선언하므로, 새 `opencode-go` 행은 이 sidecar를 거치지 않고
+이미지를 직접 보냅니다. 같은 게이트웨이의 형제 모델 `deepseek-v4-flash`는 여전히 HTTP 400 "Model only
+supports text input"을 반환하며 sidecar 지원 상태를 유지하고, `opencode-zen`과 `opencode-free` 티어는
+기존 분류를 유지합니다. 레지스트리 메타데이터는 비어 있는 값만 채우므로, 이 수정 이전에 저장된
+`opencode-go` provider 행은 저장된 오버라이드를 그대로 유지한 채 `deepseek-v4.1-flash`를 계속 이
+sidecar로 라우팅합니다. 이러한 행에서 네이티브 vision을 사용하려면 `~/.opencodex/config.json`에서
+해당 provider의 `noVisionModels` 목록에서 `deepseek-v4.1-flash`를 제거하고 저장된
+`modelInputModalities` `["text"]` 항목을 삭제하거나, 프리셋을 삭제한 후 다시 추가하세요. `ocx
+provider edit opencode-go --model deepseek-v4.1-flash --text-only`는 위의 모든 선언보다 우선하는
+`modelCapabilities`를 통해 제한을 복원합니다.
+
 - 이미지는 사용자, developer, 도구 결과 메시지에서 올 수 있습니다. Codex의 `view_image` 결과도
   포함됩니다.
 - OpenAI 경로(ChatGPT 로그인 패스스루)에서는 각 이미지가 선택한 `reasoning.effort`(기본값

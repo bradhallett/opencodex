@@ -118,6 +118,20 @@ geri dönüşünü kullanır. Başlangıç hala açıkça kalıcı hale getirilm
 `gpt-5.4-mini` değerini `gpt-5.6-luna`'ya geçirir; bu geçiş, bulunmayan bir
 model alanına değil, saklanan bir değere uygulanır.
 
+OpenCode Go'nun `deepseek-v4.1-flash` modeli Zen Go ağ geçidinde `image_url` parçalarını kabul eder ve
+artık yerel `text` ile `image` modalitelerini bildirir; bu nedenle yeni `opencode-go` satırları
+görselleri bu sidecar yerine doğrudan ona gönderir. Aynı ağ geçidindeki kardeş model
+`deepseek-v4-flash` hâlâ HTTP 400 "Model only supports text input" yanıtı verir ve sidecar destekli
+kalır; `opencode-zen` ve `opencode-free` katmanları ise mevcut sınıflandırmalarını korur. Kayıt defteri
+meta verileri yalnızca eksik değerleri doldurur; bu nedenle bu düzeltmeden önce kaydedilmiş bir
+`opencode-go` satırı, kayıtlı geçersiz kılmalarını korur ve `deepseek-v4.1-flash`'i bu sidecar
+üzerinden yönlendirmeye devam eder. Böyle bir satırda yerel vision'ı etkinleştirmek için
+`deepseek-v4.1-flash`'i sağlayıcının `noVisionModels` listesinden kaldırın ve
+`~/.opencodex/config.json` içindeki kayıtlı `modelInputModalities` `["text"]` girdisini silin — ya da
+ön ayarı silip yeniden ekleyin. `ocx provider edit opencode-go --model deepseek-v4.1-flash
+--text-only`, kısıtlamayı yukarıdaki tüm bildirimlerin önüne geçen `modelCapabilities` üzerinden geri
+yükler.
+
 - Görseller, Codex'in `view_image`'ı da dahil olmak üzere kullanıcı, geliştirici
   ve araç sonucu mesajlarından gelebilir.
 - OpenAI yolunda (ChatGPT girişi doğrudan geçişi), her görsel seçilen

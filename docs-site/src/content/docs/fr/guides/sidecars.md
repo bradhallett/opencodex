@@ -97,6 +97,18 @@ utilisent le modèle de repli `gpt-5.6-luna`. Au démarrage, une ancienne valeur
 est toujours migrée vers `gpt-5.6-luna` ; cette migration s'applique à une valeur stockée, et non à l'absence du
 champ du modèle.
 
+Sur OpenCode Go, `deepseek-v4.1-flash` accepte les entrées `image_url` sur la passerelle Zen Go et déclare
+désormais les modalités natives `text` et `image` : les nouvelles lignes `opencode-go` lui envoient donc les
+images directement au lieu de passer par ce sidecar. Son jumeau `deepseek-v4-flash` sur la même passerelle
+répond toujours HTTP 400 « Model only supports text input » et reste couvert par le sidecar ; les paliers
+`opencode-zen` et `opencode-free` conservent leur classification existante. Les métadonnées du registre ne
+remplissent que les valeurs manquantes : une ligne `opencode-go` enregistrée avant cette correction garde ses
+surcharges enregistrées et continue de router `deepseek-v4.1-flash` via ce sidecar. Pour activer la vision
+native sur une telle ligne, retirez `deepseek-v4.1-flash` de la liste `noVisionModels` du fournisseur et
+supprimez son entrée `modelInputModalities` `["text"]` enregistrée dans `~/.opencodex/config.json` — ou
+supprimez puis recréez le preset. `ocx provider edit opencode-go --model deepseek-v4.1-flash --text-only`
+restaure la restriction via `modelCapabilities`, qui l'emporte sur toutes les déclarations ci-dessus.
+
 - Les images peuvent provenir de messages utilisateur, développeur et de résultats d’outils, y compris de `view_image` dans Codex.
 - Sur le chemin OpenAI (ChatGPT-login passthrough), chaque image est envoyée au modèle de vision configuré
   au point de terminaison Responses avec la valeur `reasoning.effort` sélectionnée (`low` par défaut) ; sa

@@ -138,6 +138,18 @@ not use this sidecar by default. Explicit `noVisionModels` or text-only declarat
 authoritative. First-party `deepseek-chat`, `deepseek-reasoner`, and `deepseek-v4-flash` remain
 sidecar-backed by default; Zen routes are unchanged and were not probed in this update.
 
+OpenCode Go's `deepseek-v4.1-flash` accepts `image_url` input on the Zen Go gateway and now
+declares native `text` and `image` modalities, so new `opencode-go` rows send it images directly
+instead of through this sidecar. Its sibling `deepseek-v4-flash` on the same gateway still answers
+HTTP 400 "Model only supports text input" and stays sidecar-backed, and the `opencode-zen` /
+`opencode-free` tiers keep their existing classification. Registry metadata only fills missing
+values, so an `opencode-go` provider row saved before this correction keeps its saved overrides and
+continues routing `deepseek-v4.1-flash` through this sidecar. To opt into native vision on such a
+row, remove `deepseek-v4.1-flash` from the provider's `noVisionModels` list and delete its saved
+`modelInputModalities` `["text"]` entry in `~/.opencodex/config.json`, or delete and re-add the
+preset. `ocx provider edit opencode-go --model deepseek-v4.1-flash --text-only` restores the
+restriction through `modelCapabilities`, which outranks every declaration above.
+
 - Images can come from user, developer, and tool-result messages, including Codex's `view_image`.
 - On the OpenAI path (ChatGPT-login passthrough), each image is sent to the configured vision model
   over the Responses endpoint with the selected `reasoning.effort` (`low` by default), and its

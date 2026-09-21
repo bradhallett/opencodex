@@ -80,6 +80,18 @@ OpenAI 実行経路、ダッシュボード、管理 API は `gpt-5.6-luna` を�
 明示的に保存された旧 `gpt-5.4-mini` 値を引き続き `gpt-5.6-luna` にマイグレーションしますが、この
 マイグレーションは保存済みの値だけが対象で、モデルフィールドがない場合には適用されません。
 
+OpenCode Go の `deepseek-v4.1-flash` は Zen Go ゲートウェイで `image_url` 入力を受け付け、ネイティブな
+`text` と `image` モダリティを宣言するようになったため、新しい `opencode-go` 行はこの sidecar を
+経由せず画像を直接送信します。同じゲートウェイの兄弟モデル `deepseek-v4-flash` は引き続き HTTP 400
+「Model only supports text input」を返し sidecar 経由のままで、`opencode-zen` と `opencode-free`
+ティアは既存の分類を維持します。レジストリのメタデータは欠損値だけを補完するため、この修正以前に
+保存された `opencode-go` プロバイダー行は保存済みのオーバーライドを保持し、`deepseek-v4.1-flash`
+をこの sidecar 経由でルーティングし続けます。そのような行でネイティブ vision を有効にするには、
+`~/.opencodex/config.json` でプロバイダーの `noVisionModels` リストから `deepseek-v4.1-flash` を
+削除し、保存済みの `modelInputModalities` `["text"]` エントリを消去するか、プリセットを削除して
+追加し直してください。`ocx provider edit opencode-go --model deepseek-v4.1-flash --text-only` は
+`modelCapabilities` を通じて制限を復元し、これは上記のすべての宣言に優先します。
+
 - 画像はユーザー、developer、ツール結果メッセージから来ます。Codex の `view_image` 結果も
   含まれます。
 - OpenAI パス（ChatGPT ログインパススルー）では、各画像は選択した `reasoning.effort`（デフォルト
