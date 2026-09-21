@@ -17,7 +17,10 @@ const LIB = repoPath(`${SRC}/lib.rs`);
 const SIDECAR = repoPath(`${SRC}/sidecar.rs`);
 const STARTUP = repoPath(`${SRC}/startup.rs`);
 const PROXY = repoPath(`${SRC}/proxy.rs`);
-const PAGE = repoPath("desktop/ui/main.js");
+// The startup surface is one file: the page and its script ship together in index.html,
+// because a script loaded from a second file is not named by the policy the webview is
+// actually served and never runs on some platforms. Read the page as the oracle for both.
+const PAGE = repoPath("desktop/ui/index.html");
 const CONFIG = repoPath("desktop/src-tauri/tauri.conf.json");
 
 function code(path: string): string {
@@ -97,7 +100,9 @@ describe("desktop startup surface", () => {
 
   test("one deadline covers the whole sequence and bounds every probe under it", () => {
     expect(startup).toContain("pub const DEADLINE: Duration");
-    expect(startup).toContain("let deadline = started + DEADLINE;");
+    // `mut` because a takeover prompt moves the ceiling by however long the user thought — the
+    // budget bounds the machinery, not the person deciding.
+    expect(startup).toContain("let mut deadline = started + DEADLINE;");
     // The budget for finding an existing runtime is the CLI's now, not a second one here: the
     // tuned probe budgets exist because a shell-side reimplementation answered "nobody is
     // listening" twice and started duplicate proxies.
@@ -180,9 +185,10 @@ describe("desktop startup surface", () => {
   test("every call into the shell can fail without leaving the page blank", () => {
     const page = readFileSync(PAGE, "utf8");
     expect(page).toContain("function reportPageFailure");
-    // Both entry points — the first load and the retry — have to catch, because either one
-    // failing silently leaves a window that says "Starting…" forever.
-    expect(page.match(/reportPageFailure\(/g) || []).toHaveLength(3);
+    // Every entry point — the first load, the retry and the takeover decision — has to catch,
+    // because any one failing silently leaves a window that says "Starting…" forever. The count
+    // includes the function definition itself.
+    expect(page.match(/reportPageFailure\(/g) || []).toHaveLength(4);
     const retry = page.slice(page.indexOf('retry.addEventListener'));
     expect(retry.slice(0, 400)).toContain("catch");
   });
@@ -214,6 +220,18 @@ describe("the bootstrap page reports only what it was told", () => {
 
   test("the failure block honours its hidden attribute", () => {
     expect(/#failure\[hidden\][^{]*\{[^}]*display:\s*none/.test(markup)).toBe(true);
+  });
+
+  test("the bootstrap script carries the nonce token the shell replaces", () => {
+    // The webview is served a policy the configuration file does not contain. Tauri appends its
+    // own hashes and nonces to script-src, and a hash or nonce in that directive makes
+    // 'unsafe-inline' inert, so nothing loads unless it is named. Its injector only tags
+    // script[src^='http'], and this page loads its script by relative path, so the page has to
+    // carry the token itself; the shell replaces it with a real nonce and adds that nonce to the
+    // directive. Without it the surface renders as static markup on the platforms where the
+    // asset origin does not satisfy 'self' — observed on Linux, where the page never ran a line.
+    expect(markup).not.toContain("./main.js");
+    expect(markup).toMatch(/<script nonce="__TAURI_SCRIPT_NONCE__">/);
   });
 
   test("the handshake with the shell is bounded", () => {
