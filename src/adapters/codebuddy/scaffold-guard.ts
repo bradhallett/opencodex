@@ -28,9 +28,28 @@ interface ScanResult {
   lineStart: boolean;
 }
 
-function prefixAtEnd(loweredText: string, at: number, expected: string): boolean {
-  const remaining = loweredText.length - at;
-  return remaining <= expected.length && expected.startsWith(loweredText.slice(at));
+// Probe with ASCII-only case folding rather than toLowerCase(): Unicode lowercasing can expand
+// a code point (İ, ŉ, ligatures), shifting folded-text offsets away from `text` positions and
+// silently disabling detection. `expected` must already be lowercase.
+function asciiFold(code: number): number {
+  return code >= 0x41 && code <= 0x5a ? code + 0x20 : code;
+}
+
+function startsWithFolded(text: string, index: number, expected: string): boolean {
+  if (index + expected.length > text.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (asciiFold(text.charCodeAt(index + i)) !== expected.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function prefixAtEnd(text: string, at: number, expected: string): boolean {
+  const remaining = text.length - at;
+  if (remaining > expected.length) return false;
+  for (let i = 0; i < remaining; i++) {
+    if (asciiFold(text.charCodeAt(at + i)) !== expected.charCodeAt(i)) return false;
+  }
+  return true;
 }
 
 /**
@@ -46,7 +65,6 @@ function scan(
   initialFence: "`" | "~" | null,
   initialLineStart: boolean,
 ): ScanResult {
-  const loweredText = text.toLowerCase();
   let fence = initialFence;
   let lineStart = initialLineStart;
   let index = 0;
@@ -61,12 +79,12 @@ function scan(
         lineStart = false;
         continue;
       }
-      if (fenceMarkers.some(marker => prefixAtEnd(loweredText, index, marker))) {
+      if (fenceMarkers.some(marker => prefixAtEnd(text, index, marker))) {
         return { safe: text.slice(0, index), held: text.slice(index), fail: false, fence, lineStart };
       }
 
       if (!fence) {
-        if (loweredText.startsWith(DSML_CALLS_LINE, index)) {
+        if (startsWithFolded(text, index, DSML_CALLS_LINE)) {
           const afterCalls = index + DSML_CALLS_LINE.length;
           let invokeAt = -1;
           if (text[afterCalls] === "\n") invokeAt = afterCalls + 1;
@@ -76,15 +94,15 @@ function scan(
           }
 
           if (invokeAt >= 0) {
-            const invokeNameStart = loweredText[invokeAt + DSML_INVOKE_PREFIX.length];
-            if (loweredText.startsWith(DSML_INVOKE_PREFIX, invokeAt) && invokeNameStart && !/[\s"]/.test(invokeNameStart)) {
+            const invokeNameStart = text[invokeAt + DSML_INVOKE_PREFIX.length];
+            if (startsWithFolded(text, invokeAt, DSML_INVOKE_PREFIX) && invokeNameStart && !/[\s"]/.test(invokeNameStart)) {
               return { safe: text.slice(0, index), held: "", fail: true, fence, lineStart };
             }
-            if (invokeAt === text.length || prefixAtEnd(loweredText, invokeAt, DSML_INVOKE_PREFIX)) {
+            if (invokeAt === text.length || prefixAtEnd(text, invokeAt, DSML_INVOKE_PREFIX)) {
               return { safe: text.slice(0, index), held: text.slice(index), fail: false, fence, lineStart };
             }
           }
-        } else if (prefixAtEnd(loweredText, index, DSML_CALLS_LINE)) {
+        } else if (prefixAtEnd(text, index, DSML_CALLS_LINE)) {
           return { safe: text.slice(0, index), held: text.slice(index), fail: false, fence, lineStart };
         }
       }
