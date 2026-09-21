@@ -1,3 +1,4 @@
+import { getEffectiveCodexAutoSwitchThreshold } from "./account-auto-switch";
 import { saveConfigPreservingClaudeCode } from "../config";
 import { isCodexAccountGenerationLive, registerCodexRefreshGenerationHandoff } from "./account-store";
 import { handOffThreadAffinityGeneration } from "./routing/thread-affinity";
@@ -531,7 +532,7 @@ function previewReusableAffinityAccount(
   // Quota strategy only: non-quota strategies keep affinity for ongoing threads
   // (new-session-only rotation — docs / affinity policy A).
   if (accountPoolStrategyForScope(config, quotaScope) === "quota") {
-    const threshold = config.autoSwitchThreshold ?? 80;
+    const threshold = getEffectiveCodexAutoSwitchThreshold(config, entry.accountId);
     if (threshold > 0) {
       const usage = computeCodexUsageScore(
         getAccountQuota(entry.accountId),
@@ -564,7 +565,7 @@ function resetFirstAffinityReplacement(
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
-  const threshold = config.autoSwitchThreshold ?? 80;
+  const threshold = getEffectiveCodexAutoSwitchThreshold(config, entry.accountId);
   if (threshold <= 0) return null;
   const usage = computeCodexUsageScore(getAccountQuota(entry.accountId), getPoolAccountPlanForSelection(config, entry.accountId, selectionOptions), now);
   if (!mayRebindAffinityForQuota(config, entry.accountId, usage, threshold, selectionOptions)) return null;
@@ -652,7 +653,7 @@ function reevaluateAffinityQuota(
     return replacement;
   }
   if (strategy !== "quota") return null;
-  const threshold = config.autoSwitchThreshold ?? 80;
+  const threshold = getEffectiveCodexAutoSwitchThreshold(config, entry.accountId);
   const usage = threshold > 0
     ? computeCodexUsageScore(
         getAccountQuota(entry.accountId),
@@ -773,7 +774,7 @@ export function previewCodexAccountForRequest(
   }
   active = pickPriorityPreemption(config, active, now, quotaScope, selectionOptions) ?? active;
 
-  const threshold = config.autoSwitchThreshold ?? 80;
+  const threshold = getEffectiveCodexAutoSwitchThreshold(config, active);
   if (threshold > 0) {
     const usage = computeCodexUsageScore(
       getAccountQuota(active),
@@ -932,7 +933,7 @@ export function resolveCodexAccountForThreadDetailed(
       if (entry.transientHoldSince !== undefined) delete entry.transientHoldSince;
       if (entry.transientDetourAccountId !== undefined) delete entry.transientDetourAccountId;
       // Periodic quota re-eval: a long-lived bound thread must still switch when
-      // it crosses autoSwitchThreshold, but only onto an account that has genuine
+      // it crosses its effective threshold, but only onto an account that has genuine
       // quota headroom AND is strictly cooler — moving to a destination still over
       // the threshold just trades the warmed prompt-cache prefix for an equally hot
       // account, which is the #4546 ping-pong.
