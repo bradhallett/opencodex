@@ -508,12 +508,16 @@ test("apply writes locally only when no proxy is running", async () => {
 });
 
 test("no-arg and legacy mode flags apply Desktop config", async () => {
+  const config = loadConfig();
+  config.claudeCode = { intercept: { enabled: false } };
+  saveConfig(config);
   const log = spyOn(console, "log").mockImplementation(() => {});
   const error = spyOn(console, "error").mockImplementation(() => {});
   try {
     // Deterministic: no live proxy in the test environment, so apply writes locally.
     const noProxy = { findLiveProxyImpl: async () => null };
     expect(await handleClaudeDesktopCommand([], noProxy)).toBe(0);
+    expect(log.mock.calls.flat().join(" ")).not.toContain("ocx claude desktop apply --first-party");
     expect(await handleClaudeDesktopCommand(["--static"], noProxy)).toBe(0);
     expect(readFileSync(join(process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR!, "_meta.json"), "utf8")).toContain("opencodex");
     expect(error).not.toHaveBeenCalled();
