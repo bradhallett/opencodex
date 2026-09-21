@@ -724,12 +724,9 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
       // HTTP 400 "Model only supports text input", which is what keeps the two
       // distinct here rather than collapsing them.
       //
-      // The declaration is what reaches an EXISTING install: derive.ts fills
-      // noVisionModels all-or-nothing, so a config persisted while the stale list
-      // was current keeps it forever, and modelInputModalities is filled per-key
-      // BENEATH the saved value. Both halves are repaired by
-      // stale-vision-classification-migration.ts; correcting the registry alone
-      // would fix new installs and leave existing ones stripping images.
+      // derive.ts fills missing registry metadata but does not replace saved values.
+      // That makes this declaration the default for new rows while preserving an
+      // existing install's operator-editable image-routing restrictions.
       "deepseek-v4.1-flash": ["text", "image"],
       // Muse Spark Contributor is natively multimodal on Zen Go: it accepts input_image
       // parts over /responses (probed 2026-08-26). Without this declaration the catalog
