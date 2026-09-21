@@ -185,7 +185,6 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(properties.value).toEqual({ $ref: "https://example.com/schema.json#/Thing" });
   });
 
-
   test("composes duplicate required, properties, and same-key assertions", async () => {
     // The reviewer's first blocker. `$ref` under 2020-12 is an in-place applicator: the
     // node and its target BOTH apply. Overwriting made a tool that required `a` and `b`
@@ -303,6 +302,38 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     // It returns rather than throwing, and what it returns is still valid.
     expect(parameters?.type).toBe("object");
     expect(siblingRefPaths(parameters)).toEqual([]);
+  });
+
+  test("bounds repeated large property-map inlining by serialized bytes", async () => {
+    const bigProperties = Object.fromEntries(
+      Array.from({ length: 10_000 }, (_, index) => [`property_${index}`, true]),
+    );
+    const references = Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [
+        `value_${index}`,
+        { $ref: "#/$defs/Big", properties: { sibling: { type: "string" } } },
+      ]),
+    );
+    const tool: OcxTool = {
+      name: "bounded_amplification_tool",
+      parameters: {
+        type: "object",
+        $defs: { Big: { type: "object", properties: bigProperties } },
+        properties: references,
+      },
+    };
+
+    const request = await adapterFor("https://api.moonshot.ai/v1").buildRequest(parsedRequest(tool));
+    const inputBytes = new TextEncoder().encode(JSON.stringify(tool.parameters)).byteLength;
+    const outputBytes = new TextEncoder().encode(request.body).byteLength;
+    const parameters = JSON.parse(request.body).tools[0].function.parameters as Record<string, unknown>;
+
+    // The original definition remains available, but repeated sibling refs stop inlining once
+    // their cumulative serialized cost reaches the fixed allowance.
+    expect(outputBytes).toBeLessThan(inputBytes + 2 * 1024 * 1024);
+    expect(siblingRefPaths(parameters)).toEqual([]);
+    const emitted = parameters.properties as Record<string, Record<string, unknown>>;
+    expect(Object.values(emitted).some(value => Object.keys(value).length === 1 && "$ref" in value)).toBe(true);
   });
 
 

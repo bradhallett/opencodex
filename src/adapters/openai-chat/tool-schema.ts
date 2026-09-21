@@ -198,6 +198,37 @@ const MOONSHOT_MAX_REF_EXPANSIONS = 512;
  */
 const MOONSHOT_MAX_SCHEMA_DEPTH = 64;
 const MOONSHOT_MAX_SCHEMA_NODES = 4_096;
+const MOONSHOT_MAX_INLINED_SCHEMA_BYTES = 1024 * 1024;
+
+/**
+ * Measure only as far as the caller's remaining allowance. Keeping this iterative avoids
+ * reintroducing the deep-schema stack exhaustion that the normalizer's depth limit prevents.
+ */
+function serializedJsonBytesUpTo(value: unknown, limit: number): number {
+  const encoder = new TextEncoder();
+  const pending: unknown[] = [value];
+  let bytes = 0;
+  while (pending.length > 0 && bytes <= limit) {
+    const item = pending.pop();
+    if (Array.isArray(item)) {
+      bytes += 2 + Math.max(0, item.length - 1);
+      for (const child of item) pending.push(child);
+      continue;
+    }
+    if (isXaiObjectSchema(item)) {
+      const entries = Object.entries(item);
+      bytes += 2 + Math.max(0, entries.length - 1);
+      for (const [key, child] of entries) {
+        bytes += encoder.encode(JSON.stringify(key)).byteLength + 1;
+        pending.push(child);
+      }
+      continue;
+    }
+    const encoded = JSON.stringify(item);
+    bytes += encoder.encode(encoded === undefined ? "null" : encoded).byteLength;
+  }
+  return bytes;
+}
 
 /**
  * Assertion keywords whose meaning under a `$ref` is CONJUNCTION, not replacement. A node
@@ -311,7 +342,9 @@ function composeProperties(
 
 interface MoonshotNormalizeState {
   activeRefs: Set<string>;
+  inlineSizeCache: WeakMap<Record<string, unknown>, number>;
   remainingExpansions: number;
+  remainingInlineBytes: number;
   remainingNodes: number;
 }
 
@@ -342,6 +375,16 @@ function normalizeMoonshotSchemaNode(
 
     const target = lookupLocalJsonPointer(root, ref);
     if (isXaiObjectSchema(target)) {
+      // Charge the referenced value before copying it. Object/node counts do not cover large
+      // maps of boolean schemas, which otherwise allow a small input to create hundreds of
+      // full copies before the final request is serialized.
+      let inlineBytes = state.inlineSizeCache.get(target);
+      if (inlineBytes === undefined) {
+        inlineBytes = serializedJsonBytesUpTo(target, MOONSHOT_MAX_INLINED_SCHEMA_BYTES);
+        state.inlineSizeCache.set(target, inlineBytes);
+      }
+      if (inlineBytes > state.remainingInlineBytes) return { $ref: ref };
+      state.remainingInlineBytes -= inlineBytes;
       state.remainingExpansions -= 1;
       state.activeRefs.add(ref);
       const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state, depth + 1);
@@ -404,7 +447,9 @@ function normalizeMoonshotToolParameters(parameters: unknown): Record<string, un
   const rooted = ensureRootObjectType(parameters);
   const normalized = normalizeMoonshotSchemaNode(rooted, rooted, {
     activeRefs: new Set<string>(),
+    inlineSizeCache: new WeakMap<Record<string, unknown>, number>(),
     remainingExpansions: MOONSHOT_MAX_REF_EXPANSIONS,
+    remainingInlineBytes: MOONSHOT_MAX_INLINED_SCHEMA_BYTES,
     remainingNodes: MOONSHOT_MAX_SCHEMA_NODES,
   });
   return isXaiObjectSchema(normalized) ? normalized : rooted;

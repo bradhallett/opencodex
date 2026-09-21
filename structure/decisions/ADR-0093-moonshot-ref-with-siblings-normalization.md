@@ -23,9 +23,12 @@
   순수 `$ref`로 닫힌다 — 약해진 스키마를 절반만 내보내는 것보다 낫다. Moonshot 계열
   `openai-chat` baseUrl에만 적용되고 다른 provider는 손대지 않는다.
 
-## Why three budgets
+## Why four budgets
 
-예산은 세 가지다. 확장 횟수만으로는 참조가 하나도 없는 깊은 스키마를 막지 못해서, 깊이와
-노드 수를 따로 둔다 — `google-tool-schema.ts`가 이미 쓰는 형태다. 두 가드 모두 제거했을 때
+예산은 네 가지다. 확장 횟수만으로는 참조가 하나도 없는 깊은 스키마를 막지 못해서, 깊이와
+노드 수를 따로 둔다 — `google-tool-schema.ts`가 이미 쓰는 형태다. 인라인된 참조의 직렬화
+바이트도 누적해서 제한한다. 큰 boolean `properties` 맵은 노드 수가 작아도 출력에서 반복 복제될
+수 있기 때문이다. 제한을 넘는 참조는 Moonshot이 허용하는 순수 `$ref`로 남긴다. 두 가드 모두
+제거했을 때
 실제로 red가 되는지 확인했고, 예산을 풀면 20k 깊이에서 `RangeError: Maximum call stack size
 exceeded`가 난다.
