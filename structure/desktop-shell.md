@@ -159,6 +159,25 @@ The bundled CLI answers it. Until that contract lands, `resolve` returns *unavai
 not the same as "nobody owns it" — the question has not been put — so the shell attempts no takeover
 and records nothing, and the startup state and the diagnostic say which of the two it is.
 
+### Desktop runtime ownership acceptance
+
+The consent surface labels the exact ownership subject it is about to record. A relaunch of the
+same desktop installation reuses consent when the recorded `owner` and app-local `installId`
+still match; the generation is deliberately not part of that comparison, because the recorded
+claim this app holds is its own consent, not a freshness token.
+Package update and service repair also preserve that grant instead of reviving the package
+service when the approved subject is unchanged. The write path is stricter than the relaunch
+path: a different `owner`, different `installId`, moved `consentGeneration` or unreadable ownership record is not reuse
+there — a pending approval is revalidated against the full
+subject, so a grant, a release or a re-grant that moved the generation between the prompt and
+the write cannot be claimed by the stale approval. On relaunch the same list narrows to the
+comparison itself: a different `owner` or `installId` makes the app ask again, and an
+unreadable record refuses closed rather than reading as unowned.
+Uninstall or an explicit handback releases only the live claim and keeps the generation
+ceiling, so a later grant cannot be mistaken for the old one. A runtime still attached to an
+old package-owned registration is only attachable as a guest until an ownership-aware CLI
+records protocol support; the shell must not treat that attachment as durable takeover consent.
+
 `desktop/src-tauri/src/first_run.rs` turns Start at Login on once per installation,
 before the tray is built so its checkbox reads the resulting state. A menu bar app
 that is not running has no menu bar item, so leaving autostart off by default left an
