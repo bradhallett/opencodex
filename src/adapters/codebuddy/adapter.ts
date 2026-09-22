@@ -63,8 +63,9 @@ export function buildChildEnv(profile: CodeBuddyProfile, apiKey: string): Record
  * Tool ownership stays with Codex: `--tools ""` disables every built-in tool and `--strict-mcp-config`
  * (with no `--mcp-config`) blocks MCP tools, so the CLI can neither read, write, exec, nor browse the
  * workspace. `-y/--dangerously-skip-permissions` is deliberately NOT passed, so any operation that
- * would require authorization is blocked. The turn is a single text/reasoning pass over stream-json;
- * Codex's tool catalog is not advertised in v1 (the control-protocol tool bridge is a fast-follow).
+ * would require authorization is blocked. The turn is a single text/reasoning pass over stream-json
+ * unless the request carries a tool catalog: then the capture-only MCP bridge advertises exactly
+ * that catalog (see `tool-bridge.ts` / `mcp-server.ts`) and the CLI still executes nothing itself.
  */
 export function buildArgs(
   profile: CodeBuddyProfile,
