@@ -31,7 +31,7 @@ const GATE_MARKER = "<!-- opencodex-pr-gate -->";
 const CHECKLIST_START = "<!-- pr-quality-readiness-checklist:start -->";
 const CHECKLIST_END = "<!-- pr-quality-readiness-checklist:end -->";
 const CHECKLIST_ITEMS = [
-  "All CI tests are green on my local testing.",
+  "Required local validation passed; commands, results, and any full-suite exception are documented.",
   "I pushed my PR to the latest dev commit.",
   "I resolved all correct Codex and CodeRabbit findings.",
   "My PR is ready for review.",
