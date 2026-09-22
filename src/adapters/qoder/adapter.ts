@@ -133,15 +133,15 @@ export function createQoderAdapter(provider: OcxProviderConfig, deps: QoderAdapt
       try {
         promptDir = system ? await mkdtemp(join(tmpdir(), "ocx-qoder-prompt-")) : undefined;
         promptFile = promptDir ? join(promptDir, "system-prompt.txt") : undefined;
-        if (promptFile) await writeFile(promptFile, system!, { encoding: "utf8", mode: 0o600 });
+        if (promptFile) await writeFile(promptFile, system!, { encoding: "utf8", mode: 0o600, flag: "wx" });
       } catch {
         if (promptDir) await rm(promptDir, { recursive: true, force: true }).catch(() => {});
         emit({
           type: "error",
-          message: "Qoder system prompt could not be prepared securely.",
+          message: "Qoder system prompt could not be staged securely.",
           status: 500,
           errorType: "upstream_error",
-          code: "prompt_file_failed",
+          code: "system_prompt_staging_failed",
           retryable: false,
         });
         return;
