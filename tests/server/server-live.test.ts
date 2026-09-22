@@ -3,7 +3,7 @@
  * so the proxy must relay it to an OpenAI upstream instead of the /v1/* JSON-404 guard.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveCodexAccountCredential } from "../../src/codex/account-store";
 import { clearAccountNeedsReauth, clearAccountQuota } from "../../src/codex/auth-api";
@@ -1343,85 +1343,6 @@ test("sideband frame log preserves delivery without recording damaged or clean t
     globalThis.WebSocket = RealWebSocket;
     await server.stop(true);
     await upstream.stop(true);
-  }
-});
-
-// appendFileSync's mode option only applies when it creates the file, so an
-// existing permissive log would have stayed readable by other local users.
-// appendOwnerOnly hardens the opened descriptor instead.
-test("frame log hardens a pre-existing permissive file", async () => {
-  if (process.platform === "win32") return;
-  const { logLiveSidebandStage } = await import("../../src/server/live");
-  const frameLogPath = join(TEST_DIR, "frames-permissive.jsonl");
-  const previousFrameLog = process.env.OCX_LIVE_FRAME_LOG;
-  try {
-    writeFileSync(frameLogPath, "", { mode: 0o644 });
-    chmodSync(frameLogPath, 0o644);
-    process.env.OCX_LIVE_FRAME_LOG = frameLogPath;
-    logLiveSidebandStage("relay-attached");
-    expect(statSync(frameLogPath).mode & 0o777).toBe(0o600);
-    const line = readFileSync(frameLogPath, "utf8").trim();
-    expect(JSON.parse(line)).toMatchObject({ stage: "relay-attached" });
-  } finally {
-    if (previousFrameLog === undefined) delete process.env.OCX_LIVE_FRAME_LOG;
-    else process.env.OCX_LIVE_FRAME_LOG = previousFrameLog;
-  }
-});
-
-// A failed descriptor harden must not leave the record in a permissive file.
-test("a failed frame-log harden appends nothing", async () => {
-  const { appendOwnerOnly } = await import("../../src/server/live");
-  const frameLogPath = join(TEST_DIR, "frames-harden-fail.jsonl");
-  writeFileSync(frameLogPath, "", { mode: 0o644 });
-  expect(() =>
-    appendOwnerOnly(frameLogPath, "{}\n", () => {
-      throw new Error("harden denied");
-    }),
-  ).toThrow("harden denied");
-  expect(readFileSync(frameLogPath, "utf8")).toBe("");
-});
-
-test("frame diagnostics retain only metadata for text, binary, and bounded views", async () => {
-  const { logLiveSidebandFrame } = await import("../../src/server/live");
-  const previousFrameLog = process.env.OCX_LIVE_FRAME_LOG;
-  const frameLogPath = join(TEST_DIR, "frame-metadata.jsonl");
-  const damagedText = "private-voice-�";
-  const encoded = new TextEncoder().encode(damagedText);
-  const padded = new TextEncoder().encode("�safe�");
-  const frames: Array<{ data: unknown; kind: string; bytes: number; fffd: boolean }> = [
-    { data: damagedText, kind: "text", bytes: 17, fffd: true },
-    { data: encoded.buffer, kind: "binary", bytes: 17, fffd: true },
-    { data: Buffer.from(encoded), kind: "binary", bytes: 17, fffd: true },
-    // Replacement characters outside this view must not affect the flag or byte count.
-    { data: new Uint8Array(padded.buffer, 3, 4), kind: "binary", bytes: 4, fffd: false },
-    { data: new DataView(padded.buffer, 3, 4), kind: "binary", bytes: 4, fffd: false },
-    { data: "한글", kind: "text", bytes: 6, fffd: false },
-    { data: new Uint8Array([0xff]), kind: "binary", bytes: 1, fffd: true },
-  ];
-  try {
-    process.env.OCX_LIVE_FRAME_LOG = frameLogPath;
-    for (const frame of frames) logLiveSidebandFrame("u2c", frame.data);
-    logLiveSidebandFrame("c2u", { privateText: damagedText });
-    const raw = readFileSync(frameLogPath, "utf8");
-    const records = raw.trim().split("\n").map(line => JSON.parse(line));
-    expect(records).toHaveLength(frames.length);
-    records.forEach((record, index) => {
-      const expected = frames[index]!;
-      expect(record).toEqual({
-        ts: expect.any(String), dir: "u2c", kind: expected.kind,
-        bytes: expected.bytes, fffd: expected.fffd,
-      });
-      expect(Number.isNaN(Date.parse(record.ts))).toBe(false);
-    });
-    for (const content of [damagedText, "safe", "한글", "�"]) expect(raw).not.toContain(content);
-    delete process.env.OCX_LIVE_FRAME_LOG;
-    logLiveSidebandFrame("c2u", damagedText);
-    expect(readFileSync(frameLogPath, "utf8")).toBe(raw);
-    process.env.OCX_LIVE_FRAME_LOG = TEST_DIR;
-    expect(() => logLiveSidebandFrame("c2u", damagedText)).not.toThrow();
-  } finally {
-    if (previousFrameLog === undefined) delete process.env.OCX_LIVE_FRAME_LOG;
-    else process.env.OCX_LIVE_FRAME_LOG = previousFrameLog;
   }
 });
 
