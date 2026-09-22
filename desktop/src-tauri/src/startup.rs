@@ -354,7 +354,7 @@ enum Expiry {
     /// Not expired yet; the current ceiling plus its grace.
     Waiting(Instant),
     /// Expired and the failure was published in the same critical section; emit it.
-    Fired(Progress),
+    Fired(Box<Progress>),
 }
 
 /// The sequence's managed state: the latest thing it said, what it has already finished, and
@@ -545,7 +545,7 @@ impl Startup {
             return Expiry::Waiting(wake);
         }
         match self.settle_locked(&mut live, started, generation, reason) {
-            Some(progress) => Expiry::Fired(progress),
+            Some(progress) => Expiry::Fired(Box::new(progress)),
             None => Expiry::Dead,
         }
     }
