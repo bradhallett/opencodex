@@ -46,9 +46,9 @@ Manual navigation is defined in `docs-site/astro.config.mjs`. When adding a publ
 sidebar and either add localized copies or intentionally accept Starlight fallback behavior.
 
 Provider preset totals are recounted from the current registry when a preset lands. The
-documented split is 95 total: 79 key-based, 12 OAuth, three local, and one default
+documented split is 96 total: 80 key-based, 12 OAuth, three local, and one default
 ChatGPT-forward preset. The English provider guide, all seven translated copies, and all eight
-quickstarts carry the same counts, and the guides carry the same fixed-host discovery limits.
+quickstarts carry the same counts.
 
 That recount is no longer a manual obligation. Seventeen places restate these numbers and sixteen
 of them drifted once already — the English guide reached 95 while every translation and every
@@ -57,6 +57,19 @@ caught it. `tests/ci-workflows/docs-provider-preset-counts.test.ts` now derives 
 key-based split from `PROVIDER_REGISTRY` and asserts them against each page, so the next preset
 fails every locale at once instead of drifting. Each page is located by a locale-specific phrase
 rather than by its number, so rewording a sentence fails the check and asks to be re-anchored.
+
+The fixed-host discovery limits are the same shape one layer down, and this document used to
+assert their parity in prose: it claimed the guides carried the same limits, across sixteen-plus
+files, verified by nobody. That claim was false when it was written — the Korean guide had no
+Featherless section at all, so it documented twelve of the thirteen limited presets.
+`tests/ci-workflows/docs-provider-discovery-limits.test.ts` replaces the claim with the check:
+each section's byte and row ceilings are read from that preset's `modelDiscovery` and asserted
+against every shipped guide, and a grouped section must first agree in the registry before one
+sentence may describe both presets. Sections are located by brand name and the presence of a
+`KiB`/`MiB` token rather than by a translated phrase, because a restated anchor is the same
+hand-copied value the guard exists to remove; a section that is missing or duplicated fails by
+name. The byte ceiling is compared as an exact token set, so a stale number left beside the
+current one fails instead of passing on a substring.
 
 Native retirement keeps active model/quota instructions aligned across locales with the
 [catalog contract](../catalog.md#shared-catalog). Historical records and other providers
@@ -151,6 +164,19 @@ Those controls still have no owner, so there is no image-publish workflow or off
 `pull_request_target`, `issues`, and `schedule` workflows always load from the repository default
 branch, not from `dev`. Landing a change to one of them on `dev` does not change live behavior until
 it is promoted, so those files follow the promotion model rather than ordinary integration.
+
+`scripts/test.ts` owns `SERIAL_FULL_SUITE_FILES`, the shared process-isolation roster. Local
+full-suite runs, both macOS paths, and `scripts/ci/run-bun-test-batches.sh` execute those files
+alone with fresh process homes. Hosted batches preserve sorted round-robin shard membership
+and split only process boundaries; every selected file still runs once. Ordinary macOS shards
+select 1/2 and 2/2 from the full sorted file list; macOS control selects 1/1. Both execute
+sequential batches of at most 12 files with one worker.
+Storage-policy and API-usage families run as singletons, as do manifest-declared files.
+This preserves full test membership but does not claim cross-batch shared-process coverage.
+Every primary assertion failure, timeout or crash fails the run; diagnostic singleton
+attribution never turns a failed primary green. Each control batch has a 300-second process
+bound plus 15 seconds for forced reap, inside unchanged 20-minute shard and 75-minute control job caps. Other batch
+lanes keep their existing defaults; optional parallelism must be a positive integer.
 
 The Windows selector is an operational stability control, not a security boundary. A pull request
 controls the `pull_request` workflow body and can rewrite an event-name check, repository variable,
@@ -256,6 +282,10 @@ typecheck and GUI build. `scripts/release.ts` accepts either an explicit version
 `bun run privacy:scan` before the version bump, commit/push, Cross-platform CI wait, and GitHub
 Release workflow dispatch. Docs publishing is separate from npm release publishing.
 
+The `package-standalone` job in `.github/workflows/release.yml` also builds Bun compiled
+`ocx` archives for Linux, macOS, and Windows, bundles `gui/dist`, smoke-tests `/healthz`, and
+publishes SHA-256 sidecars for the attach job.
+
 Opening a release starts with the `dev` pre-move. Dispatch
 `.github/workflows/dev-version-bump.yml` with the intended version, merge the pull request it opens,
 then promote and release. A no-op is valid when `dev` already outranks the target. `release.yml`
@@ -312,9 +342,13 @@ Every npm release version must map cleanly across four surfaces:
 | Git tag | `v<version>` does not exist before publish, then points at the exact release commit. |
 | GitHub Release | `v<version>` does not exist before publish, then is created from the exact release commit. |
 
-The release must fail before `npm publish` if npm, the Git tag, or the GitHub Release already has the
-requested version. This prevents partial releases where npm is published but GitHub Release creation
-fails afterward.
+Fresh publication refuses an existing npm version, Git tag or GitHub Release. An explicit
+resume skips npm publication only after the official registry returns a scalar, full-length
+`gitHead` exactly matching the audited `GITHUB_SHA`. `scripts/verify-release-resume.ts` validates
+that metadata; the publication step also requires the preflight's matching output before it
+acknowledges publication. Missing, malformed, unavailable or mismatched identity refuses resume.
+This checks registry source metadata, not cryptographic provenance. Fresh publication retains
+the existing OIDC trusted-publishing path.
 
 Two ordering checks run before publication. The version on `origin/dev` must strictly outrank the
 release target, proving the pre-move has landed. After a fresh tag fetch, the release target must also
@@ -333,8 +367,9 @@ git ls-remote origin refs/tags/v<version>
 gh release view v<version>
 ```
 
-If any of these commands reports an existing artifact for the requested version, stop before
-publishing. For a non-destructive recovery, choose the next unused version that also outranks the
+If any of these commands reports an existing artifact for the requested version, stop fresh
+publication. A previously acknowledged npm publication may use the explicit same-commit resume
+path above; it never republishes npm. Otherwise choose the next unused version that outranks the
 global tag set and release it through `scripts/release.ts`. A patch is not available once a higher-core
 preview has closed that stable patch line.
 
@@ -348,9 +383,11 @@ runs the full suite in nine shards only on manual `workflow_dispatch` with `lane
 empty lane). Pushes to `dev`, `main` and `preview` do not activate that Windows matrix, and an
 aggregate green `ci` check on those events legitimately includes a deliberate Windows skip.
 
-Nothing in the workflow retries. Linux and Windows use `scripts/ci/run-bun-test-batches.sh`, but
+No recovery retry can turn a failed workflow green. Linux, Windows, macOS shards and macOS control use
+`scripts/ci/run-bun-test-batches.sh`, but
 each lane owns its measured process shape: Linux keeps the default twelve files and 120 seconds;
-Windows uses six files and 480 seconds. Windows selects all test families, while Linux leaves the
+Windows uses six files and 480 seconds. macOS control uses twelve files, 300 seconds and one
+worker across an unsharded 1/1 selection. Windows and macOS control select all test families, while Linux leaves the
 storage-policy and api-usage families to its dedicated jobs. The Windows step disables the
 user-scoped test-run queue with `OCX_TEST_NO_QUEUE=1`: the batches already run sequentially in one
 dedicated job, and queueing a new batch behind a surviving process from the preceding batch spends
@@ -470,3 +507,16 @@ Native steering generation overrides, explicit public-API eligibility and the co
 
 The public server configuration reference documents the optional
 [compaction routing override](../transports/responses.md#compaction-routing-overrides). Its regression file is registered in both test-layout inventories.
+
+## Bun updater ownership transaction
+
+`src/update/ownership-transaction.ts` holds one mutation lease across the Bun updater's awaited
+stop, package replacement and recovery work. The parent never puts its token in the global
+environment. Fixed stop/service/direct-recovery children can join it; package-manager and
+ancillary children receive environments without the capability. Refusals return through the
+lease boundary before exiting, and thrown failures release it after owner-aware recovery.
+Replacement and recovery inspect both the captured endpoint and the freshly read runtime record.
+Malformed or unreadable records remain unknown. Recovery requires the same complete owner
+identity and proven-dead liveness; unknown or transferred ownership never starts another proxy.
+Direct recovery retains the lease until readiness or its bounded deadline. The normal successful
+manual-runtime update still prints the existing restart hint.
