@@ -1,5 +1,12 @@
 # Providers And Adapters
 
+Meta Muse management login in `src/server/management/oauth-account-routes.ts` requires a
+server-resolved `gui-session` before starting credential acquisition, including local import,
+device login, add-account and reauthentication. This principal is not a checkbox receipt;
+forged GUI headers and raw management credentials do not substitute for it. Direct CLI login
+and other OAuth providers retain their existing policies. `src/oauth/meta-muse-device.ts`
+cancels unparsed authorization/mint failures, including mint429, without reflecting their bodies.
+
 OrcaRouter key exchange uses the shared raw-byte reader before returning a durable key. Its
 64 KiB response ceiling, single 30-second header/body deadline, and cancellation behavior follow
 the [bounded ingestion contract](transports/inventory.md#bounded-response-ingestion-and-orcarouter-login).

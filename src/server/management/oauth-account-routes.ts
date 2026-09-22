@@ -172,14 +172,13 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean; openBrowser?: unknown };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
-    // Meta Muse login imports a credential from the user's macOS Keychain and
-    // persists it in OpenCodex. A raw management token proves administrative
-    // access, not that a person acknowledged that credential move and its ToS
-    // risk. The dashboard warning therefore needs this matching server-side gate;
-    // headers are not evidence because an admin-token holder can forge them.
+    // Muse may import a local Keychain credential or start a device grant; add-account
+    // and reauth skip the import. All management login paths require the dashboard
+    // principal before credential acquisition. A raw token proves administration,
+    // not acknowledgement; caller-supplied headers are not consent evidence.
     if (provider === "meta-muse" && principal !== "gui-session") {
       return jsonResponse({
-        error: "Meta Muse import requires acknowledgement in the OpenCodex dashboard.",
+        error: "Meta Muse login requires acknowledgement in the OpenCodex dashboard.",
         code: "oauth_consent_required",
       }, 403);
     }

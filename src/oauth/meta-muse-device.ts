@@ -374,6 +374,7 @@ export async function mintMuseApiKey(
     signal: request,
   });
   if (response.status === 429) {
+    void response.body?.cancel().catch(() => undefined);
     const wait = retryAfterMs(response.headers.get("retry-after"), now());
     throw new MuseDeviceLoginError(
       "mint-rate-limited",

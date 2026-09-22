@@ -273,6 +273,23 @@ describe("muse device poll", () => {
 });
 
 describe("muse key mint", () => {
+  test("cancels a rate-limited mint body without reading or reflecting it", async () => {
+    let cancelled = false;
+    let reads = 0;
+    const fetchImpl = (async () => new Response(new ReadableStream({
+      pull(controller) { reads++; controller.enqueue(new TextEncoder().encode(BODY_CANARY)); },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 }), { status: 429, headers: { "retry-after": "30" } })) as typeof fetch;
+    const error = await caught(() => mintMuseApiKey(ACCOUNT_TOKEN, {}, { fetchImpl }));
+    expect(error.kind).toBe("mint-rate-limited");
+    expect(error.status).toBe(429);
+    expect(error.retryAfterMs).toBe(30_000);
+    expect(error.message).toContain("30s");
+    expect(error.message).not.toContain(BODY_CANARY);
+    expect(reads).toBe(0);
+    expect(cancelled).toBe(true);
+  });
+
   test("asks Meta to onboard during a login and sends the account bearer", async () => {
     const h = harness();
     await mintMuseApiKey(ACCOUNT_TOKEN, { onboard: true }, h.deps);
