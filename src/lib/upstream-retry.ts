@@ -422,6 +422,24 @@ export function cancelResponseBodyBestEffort(res: Response): void {
   }
 }
 
+/**
+ * Whether an answer to a spent operator replacement would invite yet another send.
+ *
+ * Once the one replacement a request may spend has gone out, the first send may already have run
+ * the turn, so nothing this exchange returns may cause a third send. Two parties would send again:
+ * the client, whose retry table covers 408, 409, 429 and every 5xx (the Codex client retries 5xx
+ * whatever the headers say; see {@link REPLAY_REFUSED_STATUS}), and this proxy, whose credential
+ * and quota recovery resends on 401 (token refresh, key and pool rotation) and on 402/429
+ * (account rotation). A client that follows a 307 or 308 sends the same POST body again, and a 413
+ * is answered as a context overflow the client compacts and resends, so those belong here too.
+ * {@link isTransientUpstreamStatus} is only the gateway subset of that set: 429 and 529 escaped
+ * it. These statuses settle as the refusal instead.
+ */
+function invitesResendAfterReplacement(status: number): boolean {
+  return status === 401 || status === 402 || status === 408 || status === 409 || status === 429
+    || status === 307 || status === 308 || status === 413 || status >= 500;
+}
+
 export async function fetchWithAttemptDeadline(
   url: string,
   init: RequestInit,
@@ -606,9 +624,16 @@ export async function fetchWithResetRetry(
     opts.onSendsConsumed?.(1);
     try {
       const response = await doFetch(attempt === 0 ? firstRecovery : "connection-reset");
-      if (spentOperatorReplacement && isTransientUpstreamStatus(response.status)) {
-        cancelResponseBodyBestEffort(response);
-        return replayRefusalResponse();
+      if (spentOperatorReplacement && !response.ok) {
+        if (invitesResendAfterReplacement(response.status)) {
+          cancelResponseBodyBestEffort(response);
+          return replayRefusalResponse();
+        }
+        // Any other answer keeps its real status: no client retries it, and the caller needs the
+        // evidence (a 400 names the request defect). The marker still stops this process from
+        // using it as a recovery trigger, such as the opaque-blob rebuild of a 400 or a combo hop
+        // on a context overflow, because each of those checks it before sending again.
+        markResponseNonReplayable(response);
       }
       return response;
     } catch (err) {
