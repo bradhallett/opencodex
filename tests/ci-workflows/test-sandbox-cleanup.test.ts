@@ -15,7 +15,7 @@ import {
 } from "../../src/lib/windows-secret-acl";
 import { setSyntheticWindowsPrincipalForTests } from "../../src/lib/windows-user-principal";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
-import { createTestSandboxCleanup } from "../helpers/test-sandbox-cleanup";
+import { createTestCaseLifecycle, createTestSandboxCleanup } from "../helpers/test-sandbox-cleanup";
 
 test("sandbox removal waits for producers and the actual reap after the caller belt fires", async () => {
   const root = mkdtempSync(join(tmpdir(), "ocx-sandbox-reap-"));
@@ -89,4 +89,42 @@ test("exit defers a root whose producers have not been drained even without a re
   });
   cleanup.onExit();
   expect(removals).toBe(0);
+});
+
+test("case teardown cancels late work and awaits its shared listener stop before the home is released", async () => {
+  const lifecycle = createTestCaseLifecycle();
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  let stopCalls = 0;
+  let settled = false;
+  const stop = lifecycle.ownStop(async () => { stopCalls++; await released.promise; });
+  const work = lifecycle.run(async () => {
+    try {
+      await new Promise<void>((_resolve, reject) => {
+        lifecycle.abort.signal.addEventListener("abort", () => reject(lifecycle.abort.signal.reason), { once: true });
+        entered.resolve();
+      });
+    } finally {
+      await stop();
+      settled = true;
+    }
+  });
+  await entered.promise;
+  const cleanup = lifecycle.close();
+  expect(lifecycle.close()).toBe(cleanup);
+  await Promise.resolve();
+  expect(stopCalls).toBe(1);
+  expect(settled).toBe(false);
+  released.resolve();
+  await cleanup;
+  expect(settled).toBe(true);
+  expect(stopCalls).toBe(1);
+  await expect(work).resolves.toBeUndefined();
+});
+
+test("case ownership preserves ordinary assertion failures", async () => {
+  const lifecycle = createTestCaseLifecycle();
+  const failure = new Error("fixture assertion failure");
+  await expect(lifecycle.run(async () => { throw failure; })).rejects.toBe(failure);
+  await lifecycle.close();
 });
