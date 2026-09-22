@@ -123,6 +123,34 @@ describe("desktop release scripts", () => {
     }
   });
 
+  test("collects Linux formats from an explicitly staged isolated bundle root", () => {
+    const root = temporaryDirectory();
+    try {
+      const bundleRoot = join(root, "isolated-linux-bundles");
+      mkdirSync(join(bundleRoot, "appimage"), { recursive: true });
+      mkdirSync(join(bundleRoot, "deb"), { recursive: true });
+      writeFileSync(join(bundleRoot, "appimage", "OpenCodex.AppImage"), "appimage");
+      writeFileSync(join(bundleRoot, "deb", "OpenCodex.deb"), "deb");
+
+      const files = collectReleaseAssets({
+        version: "2.61.0",
+        target: "x86_64-unknown-linux-gnu",
+        out: join(root, "release"),
+        repoRoot: root,
+        bundleRoot,
+      });
+
+      expect(files.map(path => basename(path))).toEqual([
+        "OpenCodex-2.61.0-linux-x86_64.AppImage",
+        "OpenCodex-2.61.0-linux-x86_64.AppImage.sha256",
+        "OpenCodex-2.61.0-linux-amd64.deb",
+        "OpenCodex-2.61.0-linux-amd64.deb.sha256",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rejects ambiguous bundle matches", () => {
     const root = temporaryDirectory();
     try {
@@ -407,6 +435,30 @@ describe("the desktop build toolchain carries the bundle-type marker", () => {
       major! > minimumCliWithBundlePatch.major
         || (major === minimumCliWithBundlePatch.major && minor! >= minimumCliWithBundlePatch.minor),
     ).toBe(true);
+  });
+
+  test("the release workflow gives AppImage and deb independent Cargo targets", () => {
+    const workflow = Bun.YAML.parse(
+      readFileSync(repoPath(".github", "workflows", "release.yml"), "utf8"),
+    ) as {
+      jobs?: Record<string, {
+        steps?: Array<{ name?: string; if?: string; run?: string; env?: Record<string, string> }>;
+      }>;
+    };
+    const steps = workflow.jobs?.["package-desktop"]?.steps ?? [];
+    const appImage = steps.find(step => step.name === "Build Linux AppImage bundle");
+    const deb = steps.find(step => step.name === "Build Linux deb bundle");
+    expect(appImage?.env?.CARGO_TARGET_DIR).toContain("opencodex-appimage-target");
+    expect(deb?.env?.CARGO_TARGET_DIR).toContain("opencodex-deb-target");
+    expect(appImage?.env?.CARGO_TARGET_DIR).not.toBe(deb?.env?.CARGO_TARGET_DIR);
+    expect(appImage?.run).toContain("--bundles appimage");
+    expect(deb?.run).toContain("--bundles deb");
+
+    const stage = steps.find(step => step.name === "Stage isolated Linux release bundles");
+    expect(stage?.run).toContain("$APPIMAGE_TARGET/$DESKTOP_TARGET/release/bundle/appimage/.");
+    expect(stage?.run).toContain("$DEB_TARGET/$DESKTOP_TARGET/release/bundle/deb/.");
+    const collect = steps.find(step => step.run?.includes("collect-release-assets.ts"));
+    expect(collect?.run).toContain('--bundle-root "$DESKTOP_BUNDLE_ROOT"');
   });
 });
 
