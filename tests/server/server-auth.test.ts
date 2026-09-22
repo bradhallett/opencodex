@@ -1,9 +1,10 @@
 import { createPoolRetryHarness, POOL_RETRY_MODEL } from "../helpers/codex-pool-retry";
-import * as boundedBody from "../../src/lib/bounded-body";
 import { waitForNativeMainStartupGate } from "../../src/codex/native-profile-startup";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { logsFromApiBody } from "../helpers/logs-api";
+import { timeoutGatedErrorBody } from "../helpers/timeout-gated-error-body";
+import { abortableSseUpstream } from "../helpers/abortable-sse-upstream";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -3414,42 +3415,23 @@ describe("server local API auth", () => {
     }
   });
 
-  // Release only after the real inspector reports timeout. A producer's 5.1s
-  // clock can expire before a contended Windows consumer starts its 5s clock.
+  // Release the suffix only after real inspection timed out, independent of header latency.
   test("stalled 400 body timeout never authorizes a pool retry", async () => {
     const prefix = unsupportedModelBody().slice(0, -1);
-    const suffix = "}";
-    const body = prefix + suffix;
-    const releases: Array<() => void> = [];
-    let observedTimeout = false;
-    const harness = await startPoolRetryHarness(() => rejectionResponse(new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(prefix));
-        releases.push(() => {
-          controller.enqueue(new TextEncoder().encode(suffix));
-          controller.close();
-        });
-      },
-    })));
-    const inspectBody = boundedBody.readBoundedResponseBody;
-    const inspection = spyOn(boundedBody, "readBoundedResponseBody").mockImplementation(async (response, options) => {
-      const result = await inspectBody(response, options);
-      if (response.headers.get("x-pool-retry-test") === "original" && result.timedOut) {
-        observedTimeout = true;
-        for (const release of releases.splice(0)) release();
-      }
-      return result;
-    });
+    const body = prefix + "}";
+    const stalled = timeoutGatedErrorBody(prefix, "}");
+    let harness: Awaited<ReturnType<typeof startPoolRetryHarness>> | undefined;
     try {
+      harness = await startPoolRetryHarness(() => rejectionResponse(stalled.stream()));
       const response = await harness.request();
       expect(response.status).toBe(400);
       expect(response.headers.get("x-pool-retry-test")).toBe("original");
       expect(await response.text()).toBe(body);
+      expect(stalled.observedTimeouts()).toBeGreaterThan(0);
       expect(harness.dispatches).toEqual(["acct-pool-a"]);
-      expect(observedTimeout).toBe(true);
     } finally {
-      try { for (const release of releases.splice(0)) release(); }
-      finally { inspection.mockRestore(); await stopPoolRetryHarness(harness); }
+      stalled.restore();
+      if (harness) await stopPoolRetryHarness(harness);
     }
   }, { timeout: SERVER_BUDGET_MS });
 
@@ -4020,27 +4002,11 @@ describe("server local API auth", () => {
     let releaseAbort!: () => void;
     const upstreamAborted = new Promise<void>(resolve => { releaseAbort = resolve; });
     const originalFetch = globalThis.fetch;
-    const enc = new TextEncoder();
     globalThis.fetch = (async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url === "https://upstream.example/backend-api/codex/v1/responses") {
-        init?.signal?.addEventListener("abort", releaseAbort, { once: true });
-        let sent = false;
-        return new Response(
-          new ReadableStream<Uint8Array>({
-            pull(controller) {
-              if (!sent) {
-                sent = true;
-                controller.enqueue(enc.encode('event: response.created\ndata: {"type":"response.created"}\n\n'));
-                return;
-              }
-              return new Promise<void>(() => {});
-            },
-            cancel() {
-              releaseAbort();
-            },
-          }),
-          { headers: { "content-type": "text/event-stream" } },
+        return abortableSseUpstream(
+          'event: response.created\ndata: {"type":"response.created"}\n\n', init?.signal, releaseAbort,
         );
       }
       return originalFetch(input, init);
@@ -4068,6 +4034,7 @@ describe("server local API auth", () => {
         signal: clientAbort.signal,
       });
       expect(response.status).toBe(200);
+      const requestId = response.headers.get("x-opencodex-request-id");
       const reader = response.body!.getReader();
       const first = await reader.read();
       expect(first.done).toBe(false);
@@ -4078,6 +4045,10 @@ describe("server local API auth", () => {
         upstreamAborted,
         new Promise((_, reject) => setTimeout(() => reject(new Error("upstream was not aborted")), 500)),
       ]);
+      // A real fetch body settles on abort; await accounting before deleting its home.
+      const deadline = Date.now() + INTERNAL_DEADLINE_MS;
+      while (!getRequestLogEntries().some(entry => entry.requestId === requestId) && Date.now() < deadline) await Bun.sleep(5);
+      expect(getRequestLogEntries().find(entry => entry.requestId === requestId)).toMatchObject({ status: 499, closeReason: "client_cancel" });
     } finally {
       globalThis.fetch = originalFetch;
       await server.stop(true);
