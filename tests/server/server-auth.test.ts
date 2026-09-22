@@ -23,7 +23,7 @@ import {
 } from "../../src/codex/routing";
 import { loadConfig, saveConfig } from "../../src/config";
 import { spendLedgerOwnerSnapshot } from "../../src/lib/spend-ledger-owner";
-import { settleServerAuthFixture, managementHeaders, startManagementCorsFixture, type ManagementCorsFixture } from "../helpers/server-auth-fixture";
+import { settleServerAuthFixture, managementHeaders, startManagementServerFixture, type ManagementServerFixture } from "../helpers/server-auth-fixture";
 import { clearUpstreamHostHealth, getUpstreamHostHealth, recordUpstreamHostFailure, upstreamHostHealthKey } from "../../src/codex/upstream-host-health";
 import { deriveProviderPresets } from "../../src/providers/derive";
 import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/main-account";
@@ -75,7 +75,7 @@ const originalGlobalWebSocket = globalThis.WebSocket;
 // isolation convention already used by tests/helpers/isolated-codex-home.ts.
 const TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-server-auth-"));
 let isolatedCodexHome: IsolatedCodexHome | null = null;
-let managementCorsFixture: ManagementCorsFixture | null = null;
+let managementFixture: ManagementServerFixture | null = null;
 
 function config(hostname?: string): OcxConfig {
   return {
@@ -167,9 +167,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (managementCorsFixture) {
-    await managementCorsFixture.close();
-    managementCorsFixture = null;
+  if (managementFixture) {
+    await managementFixture.close();
+    managementFixture = null;
   }
   globalThis.fetch = originalGlobalFetch;
   globalThis.WebSocket = originalGlobalWebSocket;
@@ -1327,11 +1327,11 @@ describe("server local API auth", () => {
 
   describe("management CORS fixture", () => {
     beforeEach(async () => {
-      managementCorsFixture = await startManagementCorsFixture(TEST_DIR, config("127.0.0.1"));
+      managementFixture = await startManagementServerFixture(TEST_DIR, config("127.0.0.1"));
     });
 
     test("management CORS echoes validated loopback Origin and covers delegated codex-auth responses", async () => {
-      const fixture = managementCorsFixture!;
+      const fixture = managementFixture!;
       const origin = `http://127.0.0.1:${fixture.server.port}`;
       await fixture.run(async () => {
         const settings = await fetch(new URL("/api/settings", fixture.server.url), {
@@ -1352,7 +1352,7 @@ describe("server local API auth", () => {
     });
 
     test("management CORS fixture cancellation settles its body and releases the real spend lease", async () => {
-      const fixture = managementCorsFixture!;
+      const fixture = managementFixture!;
       let aborted = false;
       let settled = false;
       const entered = Promise.withResolvers<void>();
@@ -1374,38 +1374,33 @@ describe("server local API auth", () => {
     });
   });
 
-  test("non-loopback management API allows same-origin GUI requests with API token", async () => {
-    if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
-    mkdirSync(TEST_DIR, { recursive: true });
-    process.env.OPENCODEX_HOME = TEST_DIR;
-    process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
-    saveConfig({
-      ...config("0.0.0.0"),
-      port: 0,
+  describe("non-loopback management fixture", () => {
+    beforeEach(async () => {
+      process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
+      managementFixture = await startManagementServerFixture(TEST_DIR, { ...config("0.0.0.0"), port: 0 });
     });
 
-    const server = startServer(0);
-    const origin = `http://lan.example.test:${server.port}`;
-    try {
-      const missing = await fetch(`http://127.0.0.1:${server.port}/api/settings`, {
-        headers: {
-          host: `lan.example.test:${server.port}`,
-          origin,
-        },
-      });
-      expect(missing.status).toBe(401);
+    test("non-loopback management API allows same-origin GUI requests with API token", async () => {
+      const fixture = managementFixture!;
+      const server = fixture.server;
+      const origin = `http://lan.example.test:${server.port}`;
+      await fixture.run(async () => {
+        const missing = await fetch(`http://127.0.0.1:${server.port}/api/settings`, {
+          headers: { host: `lan.example.test:${server.port}`, origin },
+          signal: fixture.signal,
+        });
+        expect(missing.status).toBe(401);
+        await missing.text();
 
-      const ok = await fetch(`http://127.0.0.1:${server.port}/api/settings`, {
-        headers: managementHeaders({
-          host: `lan.example.test:${server.port}`,
-          origin,
-        }),
+        const ok = await fetch(`http://127.0.0.1:${server.port}/api/settings`, {
+          headers: managementHeaders({ host: `lan.example.test:${server.port}`, origin }),
+          signal: fixture.signal,
+        });
+        expect(ok.status).toBe(200);
+        expect(ok.headers.get("access-control-allow-origin")).toBe(origin);
+        await ok.text();
       });
-      expect(ok.status).toBe(200);
-      expect(ok.headers.get("access-control-allow-origin")).toBe(origin);
-    } finally {
-      await server.stop(true);
-    }
+    });
   });
 
   test("websocket upgrade rejects hostile Origin even with a valid API token", async () => {
