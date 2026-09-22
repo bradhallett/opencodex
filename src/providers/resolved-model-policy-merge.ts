@@ -69,12 +69,19 @@ export function positiveCapMap(
   registry: Readonly<Record<string, number>> | undefined,
   operator: Readonly<Record<string, number>> | undefined,
 ): [Record<string, number> | undefined, StaticPolicySource] {
-  if (!registry && !operator) return [undefined, "unknown"];
-  const merged = { ...(registry ?? {}) };
-  for (const [key, value] of Object.entries(operator ?? {})) {
-    merged[key] = typeof merged[key] === "number" ? Math.min(merged[key]!, value) : value;
+  const [merged, source] = mapFill(registry, operator);
+  if (!merged) return [undefined, source];
+  // The operator owns a case-equal row, as in mapFill, but cannot widen its registry cap.
+  const registryCaps = new Map<string, number>();
+  for (const [key, value] of Object.entries(registry ?? {})) {
+    const folded = key.toLowerCase();
+    registryCaps.set(folded, Math.min(registryCaps.get(folded) ?? value, value));
   }
-  return [merged, operator ? "operator" : "registry"];
+  for (const [key, value] of Object.entries(operator ?? {})) {
+    const cap = registryCaps.get(key.toLowerCase());
+    merged[key] = cap === undefined ? value : Math.min(cap, value);
+  }
+  return [merged, source];
 }
 
 export function stableUnion(

@@ -830,4 +830,29 @@ describe("resolved static model policy parity", () => {
     expect(policy.model.contextWindow).toBe(150_000);
     expect(policy.provenance.model.contextWindow).toBe("operator");
   });
+
+  test.each([50_000, 150_000])("case-varied API-key caps retain the lower limit for operator cap %i", (cap) => {
+    const operatorKey = "VENDOR/Model-A";
+    const entry = registry({ id: "openai-apikey" });
+    const configured = provider({
+      modelContextWindows: { [operatorKey]: cap },
+      modelMaxInputTokens: { [operatorKey]: cap - 10_000 },
+    });
+    for (const modelId of [MODEL, operatorKey, "Vendor/model-a"]) {
+      const policy = resolveModelPolicy({
+        providerName: "openai-apikey", modelId, provider: configured,
+        registryEntry: entry, transportMatchedRegistry: true,
+      });
+      expect(policy.model.contextWindow).toBe(Math.min(100_000, cap));
+      expect(policy.model.maxInputTokens).toBe(Math.min(80_000, cap - 10_000));
+      expect(policy.provider.modelContextWindows).not.toHaveProperty(MODEL);
+      expect(policy.provider.modelMaxInputTokens).not.toHaveProperty(MODEL);
+      // Provenance names the owner of the merged row, including a registry-clamped override.
+      expect(policy.provenance.model.contextWindow).toBe("operator");
+      expect(policy.provenance.model.maxInputTokens).toBe("operator");
+      expect(policy.provider.modelContextWindows?.["registry-only"]).toBe(90_000);
+    }
+    expect(configured.modelContextWindows).toEqual({ [operatorKey]: cap });
+    expect(entry.modelContextWindows?.[MODEL]).toBe(100_000);
+  });
 });
