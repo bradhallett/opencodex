@@ -37,6 +37,8 @@ export interface CodingAgentDeps {
   platform?: NodeJS.Platform;
   /** Test seam for terminating a Windows CLI and all descendants. */
   killWindowsProcessTree?: KillWindowsProcessTreeFn;
+  /** Test seam for a catalog/config write failure after private bridge-directory creation. */
+  writeToolBridgeFile?: typeof writeFile;
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -193,6 +195,7 @@ export async function runCodingAgentTurn(input: CodingAgentTurnInput): Promise<v
   }
 
   const toolBridge = input.toolBridge;
+  const writeToolBridgeFile = deps.writeToolBridgeFile ?? writeFile;
   let toolBridgeDir: string | undefined;
   let toolBridgeMcpConfigPath: string | undefined;
   if (toolBridge) {
@@ -211,8 +214,8 @@ export async function runCodingAgentTurn(input: CodingAgentTurnInput): Promise<v
       toolBridgeDir = await mkdtemp(join(tmpdir(), "ocx-coding-agent-tools-"));
       const catalogPath = join(toolBridgeDir, "catalog.json");
       toolBridgeMcpConfigPath = join(toolBridgeDir, "mcp.json");
-      await writeFile(catalogPath, JSON.stringify(toolBridge.tools), { encoding: "utf8", mode: 0o600 });
-      await writeFile(
+      await writeToolBridgeFile(catalogPath, JSON.stringify(toolBridge.tools), { encoding: "utf8", mode: 0o600 });
+      await writeToolBridgeFile(
         toolBridgeMcpConfigPath,
         JSON.stringify({
           mcpServers: {
@@ -227,10 +230,10 @@ export async function runCodingAgentTurn(input: CodingAgentTurnInput): Promise<v
         }),
         { encoding: "utf8", mode: 0o600 },
       );
-    } catch (err) {
+    } catch {
       emit({
         type: "error",
-        message: `Failed to prepare the coding-agent tool bridge: ${err instanceof Error ? err.message : String(err)}`,
+        message: "Coding-agent tool bridge could not be staged securely.",
         status: 500,
         errorType: "server_error",
         code: "tool_bridge_setup_failed",

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { createCodeBuddyAdapter, type SpawnFn } from "../../src/adapters/codebuddy/adapter";
@@ -92,6 +93,45 @@ const BLOCK_STOP = { type: "stream_event", event: { type: "content_block_stop" }
 const MESSAGE_STOP = { type: "stream_event", event: { type: "message_stop" } };
 
 describe("CodeBuddy capture-only tool bridge turn", () => {
+  test.each(["catalog.json", "mcp.json"])("bridge staging failure in %s is private and cleans both staging directories", async failedFile => {
+    const before = new Set(readdirSync(tmpdir()));
+    const promptDirs: string[] = [];
+    const writes: string[] = [];
+    let bridgeDir: string | undefined;
+    let spawns = 0;
+    const adapter = createCodeBuddyAdapter(provider(), {
+      which: () => "/usr/bin/codebuddy",
+      spawn: () => { spawns++; throw new Error("must not spawn after staging failure"); },
+      writeToolBridgeFile: async (path, data, options) => {
+        const target = String(path);
+        bridgeDir = dirname(target);
+        writes.push(basename(target));
+        if (basename(target) === failedFile) {
+          promptDirs.push(...readdirSync(tmpdir())
+            .filter(name => name.startsWith("ocx-codebuddy-prompt-") && !before.has(name))
+            .map(name => join(tmpdir(), name)));
+          throw new Error(`ENOSPC private-path=${target} token=fixture-sensitive-value`);
+        }
+        await writeFile(path, data, options);
+      },
+    });
+    const events = await run(adapter, parsed([tool("exec")]));
+    expect(writes).toEqual(failedFile === "catalog.json" ? ["catalog.json"] : ["catalog.json", "mcp.json"]);
+    expect(events).toEqual([{
+      type: "error",
+      message: "Coding-agent tool bridge could not be staged securely.",
+      status: 500,
+      errorType: "server_error",
+      code: "tool_bridge_setup_failed",
+      retryable: false,
+    }]);
+    expect(spawns).toBe(0);
+    expect(bridgeDir).toBeDefined();
+    expect(existsSync(bridgeDir!)).toBe(false);
+    expect(promptDirs).toHaveLength(1);
+    expect(existsSync(promptDirs[0]!)).toBe(false);
+  });
+
   test("advertises the catalog, captures the call, renames it, and ends the leg at message_stop", async () => {
     const p = parsed([tool("exec")]);
     const bridge = buildCodeBuddyToolBridge(p);
