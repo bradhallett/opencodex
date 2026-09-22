@@ -159,6 +159,23 @@ describe("desktop startup surface", () => {
     expect(page).toContain("progress.failedPhase");
   });
 
+  test("a hidden login launch keeps the lightweight surface until an explicit open", () => {
+    const finish = startup.slice(
+      startup.indexOf("fn finish("),
+      startup.indexOf("pub fn diagnostic("),
+    );
+    expect(finish).toContain("loads_dashboard_on_ready(LaunchOrigin::detect(), visible)");
+    expect(finish).toContain("window.is_visible()");
+    expect(finish).toContain("pub fn open_dashboard(");
+    expect(finish).toContain("progress.phase == Phase::Ready.id()");
+
+    expect(lib).toContain("startup::open_dashboard(&app)");
+    expect(lib).toContain("startup::open_dashboard(app)");
+    const tray = code(repoPath(`${SRC}/tray.rs`));
+    expect(tray).toContain('"open-dashboard" =>');
+    expect(tray).toContain("crate::startup::open_dashboard(app)");
+  });
+
   test("the snapshot answers with a state rather than with nothing", () => {
     // The page returns early on a falsy progress, so an absent answer was not a neutral one: it
     // was a window frozen on its own markup, with no diagnostic in it and no event coming.
