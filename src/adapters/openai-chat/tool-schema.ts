@@ -340,11 +340,20 @@ function composeProperties(
   return combined;
 }
 
+/**
+ * The inline-byte allowance for one request. Sharing it across tools matters: a per-tool
+ * budget would let a large catalog multiply the cap by its tool count, reintroducing the
+ * request amplification this bound exists to prevent.
+ */
+interface MoonshotInlineByteBudget {
+  remaining: number;
+}
+
 interface MoonshotNormalizeState {
   activeRefs: Set<string>;
   inlineSizeCache: WeakMap<Record<string, unknown>, number>;
+  inlineByteBudget: MoonshotInlineByteBudget;
   remainingExpansions: number;
-  remainingInlineBytes: number;
   remainingNodes: number;
 }
 
@@ -383,8 +392,8 @@ function normalizeMoonshotSchemaNode(
         inlineBytes = serializedJsonBytesUpTo(target, MOONSHOT_MAX_INLINED_SCHEMA_BYTES);
         state.inlineSizeCache.set(target, inlineBytes);
       }
-      if (inlineBytes > state.remainingInlineBytes) return { $ref: ref };
-      state.remainingInlineBytes -= inlineBytes;
+      if (inlineBytes > state.inlineByteBudget.remaining) return { $ref: ref };
+      state.inlineByteBudget.remaining -= inlineBytes;
       state.remainingExpansions -= 1;
       state.activeRefs.add(ref);
       const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state, depth + 1);
@@ -443,13 +452,16 @@ function normalizeMoonshotSchemaNode(
   return out;
 }
 
-function normalizeMoonshotToolParameters(parameters: unknown): Record<string, unknown> {
+function normalizeMoonshotToolParameters(
+  parameters: unknown,
+  inlineByteBudget: MoonshotInlineByteBudget,
+): Record<string, unknown> {
   const rooted = ensureRootObjectType(parameters);
   const normalized = normalizeMoonshotSchemaNode(rooted, rooted, {
     activeRefs: new Set<string>(),
     inlineSizeCache: new WeakMap<Record<string, unknown>, number>(),
+    inlineByteBudget,
     remainingExpansions: MOONSHOT_MAX_REF_EXPANSIONS,
-    remainingInlineBytes: MOONSHOT_MAX_INLINED_SCHEMA_BYTES,
     remainingNodes: MOONSHOT_MAX_SCHEMA_NODES,
   });
   return isXaiObjectSchema(normalized) ? normalized : rooted;
@@ -465,11 +477,14 @@ export function toolsToChatFormat(
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
   const moonshotTarget = !xaiTarget && isMoonshotSchemaTarget(provider);
+  const moonshotInlineByteBudget: MoonshotInlineByteBudget = {
+    remaining: MOONSHOT_MAX_INLINED_SCHEMA_BYTES,
+  };
   const formatted = tools.flatMap(t => {
     const normalized = xaiTarget
       ? normalizeXaiToolParameters(t.parameters)
       : moonshotTarget
-        ? normalizeMoonshotToolParameters(t.parameters)
+        ? normalizeMoonshotToolParameters(t.parameters, moonshotInlineByteBudget)
         : ensureRootObjectType(t.parameters);
     const parameters = stripUnicodePropertyPatterns(stripResponsesOnlyEncryptedMarker(normalized));
 

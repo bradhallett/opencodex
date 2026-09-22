@@ -14,8 +14,8 @@
   request and reject it over a size cap. (3) Charge each inlined target its serialized JSON bytes
   against a shared byte budget before copying it.
 - 선택한 방식: (3). Each expansion measures the referenced schema's serialized size once per
-  target object, charges it against a 1 MiB allowance shared by the whole walk, and a reference
-  that would exceed the remaining allowance stays a bare `$ref`.
+  target object, charges it against one 1 MiB allowance shared by every tool in the request,
+  and a reference that would exceed the remaining allowance stays a bare `$ref`.
 - 다른 대안 대신 이 방식을 선택한 이유: (1) leaves the demonstrated amplification reachable —
   node and expansion counts stay small while output grows without bound. (2) detects the blow-up
   only after the bytes were already produced, and a whole-request rejection discards a schema

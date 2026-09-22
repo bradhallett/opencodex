@@ -309,8 +309,8 @@ their wire rejects that valid JSON Schema 2020-12 shape. Inlining preserves conj
 `required` members are unioned, lower numeric bounds take the maximum, upper numeric bounds take the
 minimum, and overlapping `properties` recurse with the same rules. The walk remains depth-, node-,
 expansion-, and inline-byte-bounded: each inlined reference is charged its serialized size against
-a shared 1 MiB allowance, and a reference that would exceed it keeps the existing bare-`$ref`
-fallback. Unresolvable or cyclic references do the same, and unrelated OpenAI-compatible providers
+one 1 MiB allowance shared by every tool in the request, and a reference that would exceed it
+keeps the existing bare-`$ref` fallback. Unresolvable or cyclic references do the same, and unrelated OpenAI-compatible providers
 retain the caller's schema unchanged.
 
 > Decision record: [ADR-0064](../decisions/ADR-0064-chat-structured-output-compatibility.md)

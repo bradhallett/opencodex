@@ -7,12 +7,12 @@ const createOpenAIChatAdapter = (
   ...args: Parameters<typeof createOpenAIChatAdapterProduction>
 ) => withTestTranslatorBudget(createOpenAIChatAdapterProduction(...args));
 
-function parsedRequest(tool: OcxTool): OcxParsedRequest {
+function parsedRequest(tool: OcxTool | OcxTool[]): OcxParsedRequest {
   return {
     modelId: "k3",
     context: {
       messages: [{ role: "user", content: "run the tool", timestamp: 0 }],
-      tools: [tool],
+      tools: [tool].flat(),
     },
     stream: true,
     options: {},
@@ -334,6 +334,45 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(siblingRefPaths(parameters)).toEqual([]);
     const emitted = parameters.properties as Record<string, Record<string, unknown>>;
     expect(Object.values(emitted).some(value => Object.keys(value).length === 1 && "$ref" in value)).toBe(true);
+  });
+
+  test("shares the inline-byte budget across the tools of one request", async () => {
+    // A per-tool allowance would multiply the cap by the catalog size: the second tool
+    // must spend what the first already charged.
+    const bigTool = (name: string): OcxTool => ({
+      name,
+      parameters: {
+        type: "object",
+        $defs: {
+          Big: {
+            type: "object",
+            properties: Object.fromEntries(
+              Array.from({ length: 30_000 }, (_, index) => [`property_${index}`, true]),
+            ),
+          },
+        },
+        properties: {
+          a: { $ref: "#/$defs/Big", properties: { s: { type: "string" } } },
+          b: { $ref: "#/$defs/Big", properties: { s: { type: "string" } } },
+        },
+      },
+    });
+
+    const request = await adapterFor("https://api.moonshot.ai/v1").buildRequest(
+      parsedRequest([bigTool("first_tool"), bigTool("second_tool")]),
+    );
+    const tools = (JSON.parse(request.body) as {
+      tools: { function: { parameters: { properties: Record<string, Record<string, unknown>> } } }[];
+    }).tools;
+    const bareRefCount = (tool: (typeof tools)[number]) =>
+      Object.values(tool.function.parameters.properties).filter(
+        value => Object.keys(value).length === 1 && "$ref" in value,
+      ).length;
+
+    // Each inline costs ~0.6 MB of the shared 1 MiB allowance, so only the first of the
+    // four sibling refs fits; the rest degrade to the bare-$ref fallback.
+    expect(bareRefCount(tools[0])).toBe(1);
+    expect(bareRefCount(tools[1])).toBe(2);
   });
 
 
