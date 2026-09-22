@@ -306,6 +306,82 @@ describe("package tree integrity", () => {
       expect(calls).toBe(0);
     });
 
+    test("a zero restart delay defers verification past the current frame", async () => {
+      // The zero-delay branch used to call verifyAndNotify synchronously inside the
+      // status() call that armed it. The deferred path must keep the same contract:
+      // the arming call returns before the verify, a verify that re-enters status()
+      // still fires exactly once, and a dispose or baseline recovery before the
+      // microtask runs means it never fires.
+      let observation: PackageTreeObservation | null = base;
+      let clock = 0;
+      let calls = 0;
+      const guard = createPackageTreeIntegrityGuard(
+        () => observation,
+        () => clock,
+        {
+          onReplaced: () => {
+            calls += 1;
+            // Re-entering status() from inside the callback must not arm a second
+            // verification behind this one.
+            guard.status();
+          },
+          replacedRestartDelayMs: 0,
+        },
+      );
+
+      expect(guard.status()).toEqual({ ok: true });
+      observation = { ...base, inode: 11n };
+      clock += 2_000;
+      expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+      // The verify is deferred: the arming status() returned without firing.
+      expect(calls).toBe(0);
+
+      await Promise.resolve();
+      expect(calls).toBe(1);
+    });
+
+    test("a zero-delay verify does not fire after dispose or a baseline recovery", async () => {
+      let observation: PackageTreeObservation | null = base;
+      let clock = 0;
+      let calls = 0;
+      const disposed = createPackageTreeIntegrityGuard(
+        () => observation,
+        () => clock,
+        { onReplaced: () => { calls += 1; }, replacedRestartDelayMs: 0 },
+      );
+
+      expect(disposed.status()).toEqual({ ok: true });
+      observation = { ...base, inode: 11n };
+      clock += 2_000;
+      expect(disposed.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+      disposed.dispose();
+      await Promise.resolve();
+      expect(calls).toBe(0);
+
+      // The same hold applies when the tree returns to the baseline before the
+      // deferred verify runs: the queued microtask observes the recovered state and
+      // stands down.
+      observation = base;
+      clock += 2_000;
+      expect(disposed.status()).toEqual({ ok: true });
+
+      let recoveredCalls = 0;
+      const recovered = createPackageTreeIntegrityGuard(
+        () => observation,
+        () => clock,
+        { onReplaced: () => { recoveredCalls += 1; }, replacedRestartDelayMs: 0 },
+      );
+      expect(recovered.status()).toEqual({ ok: true });
+      observation = { ...base, inode: 12n };
+      clock += 2_000;
+      expect(recovered.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+      observation = base;
+      clock += 2_000;
+      expect(recovered.status()).toEqual({ ok: true });
+      await Promise.resolve();
+      expect(recoveredCalls).toBe(0);
+    });
+
     test("an unreadable manifest must become readable before a fresh debounce", async () => {
       let observation: PackageTreeObservation | null = base;
       let clock = 0;

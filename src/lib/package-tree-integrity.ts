@@ -166,8 +166,12 @@ export function createPackageTreeIntegrityGuard(
         armRestartTimer(Math.max(PACKAGE_TREE_RECHECK_MS, restartDelayMs));
       }
     };
-    if (delayMs === 0) verifyAndNotify();
-    else {
+    if (delayMs === 0) {
+      // Defer like the scheduled path: verifyAndNotify can arm the next timer, and a
+      // synchronous verify inside this frame would re-enter armRestartTimer while this
+      // arm is still running.
+      queueMicrotask(verifyAndNotify);
+    } else {
       // The seam may run the callback synchronously; defer the work so
       // cancelScheduled ownership is settled before verifyAndNotify can
       // re-enter armRestartTimer.
