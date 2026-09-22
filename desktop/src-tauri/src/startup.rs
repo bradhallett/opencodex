@@ -309,7 +309,14 @@ impl Live {
         self.latest.phase == Phase::Ready.id() || self.latest.phase == Phase::Failed.id()
     }
 
-    fn publish(&mut self, progress: &mut Progress, failed_in: Option<Phase>) {
+    /// Record the latest state. A run that already said how it ended refuses further
+    /// reports: the terminal state is the page's promise that the screen stopped changing,
+    /// and a probe resuming after the expiry landed must not move it back — nor reopen the
+    /// consent gate that reads this state. Returns whether the report was taken.
+    fn publish(&mut self, progress: &mut Progress, failed_in: Option<Phase>) -> bool {
+        if self.is_settled() {
+            return false;
+        }
         if !self.reported.contains(&progress.phase)
             && progress.phase != Phase::Ready.id()
             && progress.phase != Phase::Failed.id()
@@ -324,6 +331,7 @@ impl Live {
             .collect();
         progress.failed_phase = failed_in.map(Phase::id);
         self.latest = progress.clone();
+        true
     }
 }
 
@@ -459,9 +467,9 @@ impl Startup {
         self.live().is_settled()
     }
 
-    fn publish(&self, progress: &mut Progress, failed_in: Option<Phase>) {
+    fn publish(&self, progress: &mut Progress, failed_in: Option<Phase>) -> bool {
         let mut live = self.live();
-        live.publish(progress, failed_in);
+        live.publish(progress, failed_in)
     }
 
     /// Publish a terminal state for a run that did not report one itself.
@@ -1260,7 +1268,11 @@ fn finish(app: &AppHandle, started: Instant, endpoint: ProxyEndpoint) {
     let dashboard = endpoint.url("/#/usage");
     let mut progress = Progress::new(Phase::Ready, elapsed(started));
     progress.dashboard = Some(dashboard.clone());
-    emit(app, progress, None);
+    if !emit(app, progress, None) {
+        // The run already ended — the expiry won while this one was still binding. The
+        // terminal state stays and the window must not navigate away from it.
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         // justified: replacing the bootstrap page with the dashboard is how this window has always
         // navigated, and the string is a URL this process resolved, not anything a page supplied.
@@ -1348,11 +1360,17 @@ fn report(app: &AppHandle, started: Instant, phase: Phase, detail: Option<String
     emit(app, progress, None);
 }
 
-fn emit(app: &AppHandle, mut progress: Progress, failed_in: Option<Phase>) {
+/// Publish and emit one state. A report refused because the run already ended is not
+/// emitted either, so a stale event cannot move the page past the terminal state the
+/// snapshot keeps. Returns whether the report was published.
+fn emit(app: &AppHandle, mut progress: Progress, failed_in: Option<Phase>) -> bool {
     if let Some(startup) = app.try_state::<Startup>() {
-        startup.publish(&mut progress, failed_in);
+        if !startup.publish(&mut progress, failed_in) {
+            return false;
+        }
     }
     let _ = app.emit(PHASE_EVENT, progress);
+    true
 }
 
 fn elapsed(started: Instant) -> u64 {
@@ -1605,6 +1623,33 @@ mod tests {
         assert!(startup.await_consent().is_none());
         // And the consent state stays idle, so a later run is not shadowed by a stale prompt.
         assert!(matches!(startup.live().consent, ConsentState::Idle));
+    }
+
+    #[test]
+    fn a_terminal_state_is_not_moved_by_a_late_report() {
+        // The expiry lands while the run is still inside a probe; the probe then resumes and
+        // reports. Neither the snapshot nor the consent gate may move: the terminal state is
+        // the page's promise that it stopped changing, and a report that could undo it would
+        // also reopen the prompt the terminal state just ruled out.
+        let startup = Startup::new();
+        startup.generation.store(1, Ordering::SeqCst);
+        startup.set_deadline(tokio::time::Instant::now() - Duration::from_secs(60));
+        match startup.expire_run(
+            tokio::time::Instant::now() - Duration::from_secs(60),
+            1,
+            "expired".to_owned(),
+        ) {
+            Expiry::Fired(progress) => assert_eq!(progress.phase, Phase::Failed.id()),
+            _ => panic!("an expired deadline with no consent must fire"),
+        }
+        let mut late = Progress::new(Phase::Probing, 2);
+        assert!(!startup.publish(&mut late, None));
+        assert_eq!(startup.latest().phase, Phase::Failed.id());
+        assert!(startup.await_consent().is_none());
+        // A second terminal report is refused as well: the first ending stands.
+        let mut ready = Progress::new(Phase::Ready, 3);
+        assert!(!startup.publish(&mut ready, None));
+        assert_eq!(startup.latest().phase, Phase::Failed.id());
     }
 
     #[test]
