@@ -170,6 +170,10 @@ Entitlement-specific rosters (Qoder, Devin, Cursor) additionally bind their cach
 irreversible credential fingerprint: a credential switch observes neither the fresh nor the stale
 roster recorded under the previous credential, and a failed discovery's cooldown neither supplies
 the previous credential's stale roster nor suppresses the next credential's first discovery.
+Selector decoding uses the same authority boundary through `getRoutingCached`: it resolves a
+credential only for a scoped entry, reads OAuth through the passive store observer, and rejects
+unavailable or changed authority. Successful API-key selection commits clear the cache and revoke
+in-flight publication; unrelated unscoped rows require no credential lookup.
 
 Synchronizing a supported routed provider first refreshes its models.dev effort snapshot through
 `src/codex/sync.ts` and `src/providers/reasoning-metadata.ts`; this keeps missing-cache network work
