@@ -168,9 +168,12 @@ export function createPackageTreeIntegrityGuard(
     };
     if (delayMs === 0) verifyAndNotify();
     else {
-      // The seam may run the callback synchronously; only keep its cancel
-      // function when this generation is still the live one afterwards.
-      const cancel = schedule(verifyAndNotify, delayMs);
+      // The seam may run the callback synchronously; defer the work so
+      // cancelScheduled ownership is settled before verifyAndNotify can
+      // re-enter armRestartTimer.
+      const cancel = schedule(() => {
+        queueMicrotask(verifyAndNotify);
+      }, delayMs);
       if (generation === timerGeneration && timerScheduled && typeof cancel === "function") {
         cancelScheduled = cancel;
       }

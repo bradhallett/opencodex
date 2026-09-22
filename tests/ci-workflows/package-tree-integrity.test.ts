@@ -168,15 +168,18 @@ describe("package tree integrity", () => {
             if (index >= 0) pending.splice(index, 1);
           };
         },
-        runNext: () => {
+        runNext: async () => {
           const callback = pending.shift();
           if (!callback) throw new Error("expected a scheduled callback");
           callback();
+          // The scheduled wrapper defers its verify step to a microtask; drain
+          // it here so callers keep one runNext = one verify semantics.
+          await Promise.resolve();
         },
       };
     };
 
-    test("fires once from its timer without waiting for another request", () => {
+    test("fires once from its timer without waiting for another request", async () => {
       let observation: PackageTreeObservation | null = base;
       let clock = 0;
       let calls = 0;
@@ -197,7 +200,7 @@ describe("package tree integrity", () => {
       expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
       expect(calls).toBe(0);
 
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(calls).toBe(1);
       expect(scheduler.pending).toHaveLength(0);
 
@@ -206,7 +209,7 @@ describe("package tree integrity", () => {
       expect(calls).toBe(1);
     });
 
-    test("retries when restart acceptance throws", () => {
+    test("retries when restart acceptance throws", async () => {
       let observation: PackageTreeObservation | null = base;
       let clock = 0;
       let attempts = 0;
@@ -228,15 +231,15 @@ describe("package tree integrity", () => {
       observation = { ...base, inode: 11n };
       clock += 2_000;
       expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(attempts).toBe(1);
       expect(scheduler.pending).toHaveLength(1);
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(attempts).toBe(2);
       expect(scheduler.pending).toHaveLength(0);
     });
 
-    test("baseline recovery cancels the old timer and starts a fresh debounce", () => {
+    test("baseline recovery cancels the old timer and starts a fresh debounce", async () => {
       let observation: PackageTreeObservation | null = base;
       let clock = 0;
       let calls = 0;
@@ -268,7 +271,7 @@ describe("package tree integrity", () => {
       clock += 2_000;
       expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
       expect(calls).toBe(0);
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(calls).toBe(1);
     });
 
@@ -303,7 +306,7 @@ describe("package tree integrity", () => {
       expect(calls).toBe(0);
     });
 
-    test("an unreadable manifest must become readable before a fresh debounce", () => {
+    test("an unreadable manifest must become readable before a fresh debounce", async () => {
       let observation: PackageTreeObservation | null = base;
       let clock = 0;
       let calls = 0;
@@ -323,19 +326,19 @@ describe("package tree integrity", () => {
       clock += 2_000;
       expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
       observation = null;
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(calls).toBe(0);
       expect(scheduler.pending).toHaveLength(1);
 
       observation = { ...base, inode: 11n };
-      scheduler.runNext(); // readability poll; arms a fresh full debounce
+      await scheduler.runNext(); // readability poll; arms a fresh full debounce
       expect(calls).toBe(0);
       expect(scheduler.pending).toHaveLength(1);
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(calls).toBe(1);
     });
 
-    test("a second replacement identity receives its own full debounce", () => {
+    test("a second replacement identity receives its own full debounce", async () => {
       let observation: PackageTreeObservation | null = base;
       let clock = 0;
       let calls = 0;
@@ -355,11 +358,101 @@ describe("package tree integrity", () => {
       clock += 2_000;
       expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
       observation = { ...base, inode: 12n, contentTimeNs: 300n };
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(calls).toBe(0);
       expect(scheduler.pending).toHaveLength(1);
-      scheduler.runNext();
+      await scheduler.runNext();
       expect(calls).toBe(1);
+    });
+
+    // A scheduler that invokes its callback inline used to re-enter
+    // armRestartTimer before cancelScheduled was assigned, orphaning the
+    // stale timer. The queueMicrotask wrapper defers the verify step until
+    // ownership is settled.
+    const synchronousScheduler = () => ({
+      schedule: (callback: () => void) => {
+        callback();
+        return () => {};
+      },
+    });
+
+    test("a synchronous schedule implementation still notifies exactly once", async () => {
+      let observation: PackageTreeObservation | null = base;
+      let clock = 0;
+      let calls = 0;
+      const guard = createPackageTreeIntegrityGuard(
+        () => observation,
+        () => clock,
+        {
+          onReplaced: () => { calls += 1; },
+          replacedRestartDelayMs: 5_000,
+          schedule: synchronousScheduler().schedule,
+        },
+      );
+
+      expect(guard.status()).toEqual({ ok: true });
+      observation = { ...base, inode: 11n };
+      clock += 2_000;
+      expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+      // The wrapper ran inline but the verify step is a queued microtask.
+      expect(calls).toBe(0);
+      await Promise.resolve();
+      expect(calls).toBe(1);
+      guard.dispose();
+    });
+
+    test("disposing before the queued verify runs prevents notification", async () => {
+      let observation: PackageTreeObservation | null = base;
+      let clock = 0;
+      let calls = 0;
+      const guard = createPackageTreeIntegrityGuard(
+        () => observation,
+        () => clock,
+        {
+          onReplaced: () => { calls += 1; },
+          replacedRestartDelayMs: 5_000,
+          schedule: synchronousScheduler().schedule,
+        },
+      );
+
+      expect(guard.status()).toEqual({ ok: true });
+      observation = { ...base, inode: 11n };
+      clock += 2_000;
+      expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+      guard.dispose();
+      await Promise.resolve();
+      expect(calls).toBe(0);
+    });
+
+    test("a throwing onReplaced still retries under a synchronous schedule", async () => {
+      let observation: PackageTreeObservation | null = base;
+      let clock = 0;
+      let attempts = 0;
+      const guard = createPackageTreeIntegrityGuard(
+        () => observation,
+        () => clock,
+        {
+          onReplaced: () => {
+            attempts += 1;
+            if (attempts === 1) throw new Error("restart unavailable");
+          },
+          replacedRestartDelayMs: 5_000,
+          schedule: synchronousScheduler().schedule,
+        },
+      );
+
+      expect(guard.status()).toEqual({ ok: true });
+      observation = { ...base, inode: 11n };
+      clock += 2_000;
+      expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+      // The first verify throws and re-arms; its retry wrapper queues another
+      // microtask behind this continuation, so the second attempt needs a
+      // second flush.
+      await Promise.resolve();
+      expect(attempts).toBe(1);
+      await Promise.resolve();
+      expect(attempts).toBe(2);
+      guard.dispose();
     });
 
     test("source checkouts never auto-restart", () => {
@@ -539,6 +632,7 @@ describe("package tree integrity", () => {
       expect(pending).toHaveLength(1);
 
       pending.shift()?.();
+      await Promise.resolve(); // the deferred verify step runs as a microtask
       expect(restartAcceptances).toBe(1);
       expect(pending).toHaveLength(0);
     } finally {
