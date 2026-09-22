@@ -1226,7 +1226,7 @@ export async function resolveCodexAuthContext(
   // blocks the current request, and the helper's single-flight guard collapses
   // repeated triggers into one pass. Opt-in priority failback also refreshes inactive
   // accounts; that path has a five-minute attempt limit inside the prime helper.
-  const priorityFailback = codexAccountPriorityFailbackEnabled(config);
+  const priorityFailback = codexAccountPriorityFailbackEnabled(config, accountId);
   if (fixedAccountId === undefined && !nativeMainReadsForbidden
     && (!getAccountQuota(accountId) || priorityFailback)) {
     const reason = priorityFailback ? "priority-failback" : "pre-route";

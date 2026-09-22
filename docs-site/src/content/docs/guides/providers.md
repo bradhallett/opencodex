@@ -360,6 +360,13 @@ after the refresh completes can move back. Already-running requests finish on th
 account. Manual account pins and model-access restrictions still apply. This feature is off by
 default; use `ocx config set codexAccountPriorityFailback false` to restore stable bindings.
 
+The bound source account's effective threshold controls this preference: override `0` disables it,
+and a positive override works even when the global threshold is `0`. A candidate must have known,
+non-exhausted usage below its own positive effective threshold. Candidate `0` removes only that
+threshold preference; eligibility, cooldown and hard locks still apply. Each window contributing
+to its score needs a recent live observation in this process. Credits-only updates, retained
+windows and hydrated display bars do not by themselves prove recovery.
+
 **Codex client metadata.** The ChatGPT forward path passes through the curated `FORWARD_HEADERS`
 allowlist (authorization, `chatgpt-account-id`, originator, session/thread ids, and related Codex
 headers — see [Adapters](/reference/adapters/)). Pool mode overwrites only auth and

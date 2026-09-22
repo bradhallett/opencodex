@@ -1,4 +1,5 @@
 import { getEffectiveCodexAutoSwitchThreshold } from "./account-auto-switch";
+import { codexQuotaHasFreshUsage } from "./quota-observation-freshness";
 import { saveConfigPreservingClaudeCode } from "../config";
 import { isCodexAccountGenerationLive, registerCodexRefreshGenerationHandoff } from "./account-store";
 import { handOffThreadAffinityGeneration } from "./routing/thread-affinity";
@@ -501,20 +502,22 @@ function pickAffinityPriorityFailback(
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
-  if (!codexAccountPriorityFailbackEnabled(config)
+  if (!codexAccountPriorityFailbackEnabled(config, accountId)
     || accountPoolStrategyForScope(config, quotaScope) !== "quota") return null;
   const candidate = pickPriorityPreemption(config, accountId, now, quotaScope, selectionOptions);
   if (!candidate || hasUnrecoveredCodexQuotaRefusal(candidate, quotaScope)
     || shouldFailover(config, candidate, now)) return null;
   const quota = getAccountQuota(candidate);
+  const plan = getPoolAccountPlanForSelection(config, candidate, selectionOptions);
   // Retained bars alone are not a reason to discard a healthy conversation's cache.
-  if (!quota || !Number.isFinite(quota.updatedAt)
+  if (!quota || !codexQuotaHasFreshUsage(quota, plan, now, CODEX_PRIORITY_FAILBACK_REFRESH_MS)
+    || !Number.isFinite(quota.updatedAt)
     || now - quota.updatedAt >= CODEX_PRIORITY_FAILBACK_REFRESH_MS
     || (quota.shortObservedAt !== undefined
       && now - quota.shortObservedAt >= CODEX_PRIORITY_FAILBACK_REFRESH_MS)) return null;
-  const usage = computeCodexUsageScore(quota,
-    getPoolAccountPlanForSelection(config, candidate, selectionOptions), now);
-  return !isUnknownUsage(usage) && usage < (config.autoSwitchThreshold ?? 80) ? candidate : null;
+  const usage = computeCodexUsageScore(quota, plan, now);
+  const threshold = getEffectiveCodexAutoSwitchThreshold(config, candidate);
+  return !isUnknownUsage(usage) && usage < 100 && (threshold <= 0 || usage < threshold) ? candidate : null;
 }
 
 function previewReusableAffinityAccount(

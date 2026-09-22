@@ -167,6 +167,7 @@
     }
   },
   "explicit": {
+    "codex-priority-failback.test.ts": "codex-integration",
     "codex-account-threshold-routing.test.ts": "codex-integration",
     "codex-account-threshold-api.test.ts": "codex-integration",
     "codex-account-threshold-auth.test.ts": "codex-integration",

@@ -750,11 +750,22 @@ Upstream API-key usage follows the [physical-attempt account attribution contrac
 ## Ongoing priority failback
 
 `codexAccountPriorityFailback: true` explicitly permits bound quota-strategy tasks to return to a
-strictly higher priority with known below-threshold headroom. It defaults off and requires a positive
-threshold. This separate preference can intentionally lose a warm cache; ordinary rebinding stays strictly cooler.
+strictly higher priority with known non-exhausted headroom. It defaults off and requires the bound
+source account's effective threshold to be positive: source override 0 disables it, while a positive
+source override enables it even with global 0. A candidate's positive effective threshold requires
+usage below that value; candidate 0 removes only this preference, never unknown/exhausted, health,
+entitlement or hard-lock exclusions. This separate preference can lose a warm cache; ordinary
+rebinding stays strictly cooler.
 The shared `routing.ts` helper gives preview and resolve the same result after generation, refusal,
 health, pin and model checks; independent/model lanes retain their shared-cursor isolation. Stale quota
-and short-window observation timestamps do not authorize this optional move. `account-priority.ts` owns
+and short-window observation timestamps do not authorize this optional move.
+`src/codex/quota-observation-freshness.ts` keeps process-local observation times for the quota windows
+that contribute to the candidate's score. Credits and partial updates preserve carried timestamps;
+hydrated bars alone cannot authorize failback until live observations cover those windows. This
+evidence changes no persisted quota shape, scoring, recovery or hard-lock policy. `account-priority.ts` owns
 the five-minute cadence; `auth-api/pool-mode-gate.ts` bounds request-triggered attempts, including failures,
 while preserving main-owner claims and per-credential WHAM dispatch backoff. No requests means no new polling.
+For this reason only, stale observation proof bypasses aggregate quota-cache freshness after the
+existing attempt backoff. Main refresh keeps its owned lease and passive intent: cache bypass does
+not clear an inference reauthentication mark. Other prime reasons retain their existing cache rules.
 The split config schema degrades malformed optional values to false. Exact-account and Direct routes are unchanged.

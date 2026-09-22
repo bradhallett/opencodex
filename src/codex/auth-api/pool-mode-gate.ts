@@ -1,11 +1,12 @@
 import { CODEX_PRIORITY_FAILBACK_REFRESH_MS } from "../account-priority";
+import { codexQuotaHasFreshUsage } from "../quota-observation-freshness";
 import { getCodexAccountCredential, getValidCodexToken, readCodexAccountRecord } from "../account-store";
 import { getAccountQuota, isCompleteCodexQuotaRecoverySnapshot } from "../quota";
 import { reconcileMainCodexAccountRuntimeState } from "../account-lifecycle";
 import { claimDueCodexQuotaRecoveryProbes, settleCodexQuotaRecoveryProbe } from "../routing";
 import { readCodexTokens } from "../auth-collision";
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "../account-runtime-state";
-import { getValidMainAccountToken, MainAccountTokenRefreshError, MAIN_CODEX_ACCOUNT_ID } from "../main-account";
+import { getValidMainAccountToken, MainAccountTokenRefreshError, MAIN_CODEX_ACCOUNT_ID, getMainAccountPlan } from "../main-account";
 import { captureConfigGeneration, registerStateSweepAfterTick } from "../../lib/state-store-sweeper";
 import { captureMainAccountIdentityGeneration, isMainAccountIdentityGenerationLive } from "../main-account-cache";
 import { getMainAccountHardLockStatus } from "../main-account-hard-lock";
@@ -189,7 +190,9 @@ export async function primeCodexPoolQuotas(
     const pool = (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount);
     const stale = pool.filter(a => {
       const q = getAccountQuota(a.id);
-      if (q) return Date.now() - q.updatedAt >= POOL_CACHE_TTL;
+      const observationStale = reason === "priority-failback" && q
+        && !codexQuotaHasFreshUsage(q, a.plan, Date.now(), CODEX_PRIORITY_FAILBACK_REFRESH_MS);
+      if (q && !observationStale) return Date.now() - q.updatedAt >= POOL_CACHE_TTL;
       // No stored quota: either never primed, or the last attempt failed. Retry only
       // once per TTL window so an unreachable or rejecting account cannot turn every
       // prime trigger into another upstream request.
@@ -209,10 +212,15 @@ export async function primeCodexPoolQuotas(
             // identity reconciliation through WHAM and all quota publication.
             (options.reconcileMainAccount ?? reconcileMainCodexAccountRuntimeState)();
             const quota = getAccountQuota(MAIN_CODEX_ACCOUNT_ID);
-            if (quota && (reason !== "priority-failback" || Date.now() - quota.updatedAt < MAIN_CACHE_TTL)) return;
+            const observationStale = reason === "priority-failback" && quota
+              && !codexQuotaHasFreshUsage(quota, getMainAccountPlan(), Date.now(), CODEX_PRIORITY_FAILBACK_REFRESH_MS);
+            if (quota && (reason !== "priority-failback"
+              || (!observationStale && Date.now() - quota.updatedAt < MAIN_CACHE_TTL))) return;
             if (!(options.readMainTokens ?? readCodexTokens)()) return;
-            if (options.fetchMainInfo) await options.fetchMainInfo(false);
-            else await fetchMainAccountInfoAttempt(false, 1, mainLease, true);
+            const bypassCachedQuota = !!observationStale;
+            if (options.fetchMainInfo) await options.fetchMainInfo(bypassCachedQuota);
+            // Cache bypass is passive observation, never an explicit reauthentication recovery.
+            else await fetchMainAccountInfoAttempt(bypassCachedQuota, 1, mainLease, true, false);
           });
         } catch (error) {
           if (!isNativeMainClaimUnavailable(error)) throw error;
@@ -228,7 +236,10 @@ export async function primeCodexPoolQuotas(
           if (!getCodexAccountCredential(a.id)) return;
           let result: PoolQuotaResult;
           try {
-            result = await fetchPoolAccountQuota(a.id, false, a.plan, getValidPoolTokenForPrime);
+            const quota = getAccountQuota(a.id);
+            const bypassCachedQuota = reason === "priority-failback" && quota !== null
+              && !codexQuotaHasFreshUsage(quota, a.plan, Date.now(), CODEX_PRIORITY_FAILBACK_REFRESH_MS);
+            result = await fetchPoolAccountQuota(a.id, bypassCachedQuota, a.plan, getValidPoolTokenForPrime);
           } catch (error) {
             // Local quota-flight saturation proves no WHAM request existed for this account.
             // Consume it per item so sibling workers remain inside the shared prime lifetime.

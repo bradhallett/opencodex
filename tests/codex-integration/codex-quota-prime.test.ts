@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   primeCodexPoolQuotas,
   type PrimeCodexPoolQuotasOptions,
   getAccountQuota,
   updateAccountQuota,
+  setAccountQuotaFromParsed,
   clearAccountQuota,
   clearCodexQuotaPrimeState,
   clearCodexQuotaPrimeSingleFlightForTests,
@@ -23,11 +25,13 @@ import { resetMainCodexAccountIdentityTrackingForTests } from "../../src/codex/a
 import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/main-account";
 import {
   completeNativeMainRecovery,
+  flushNativeMainStartupReleases,
   initializeNativeMainStartupGate,
 } from "../../src/codex/native-profile-startup";
 import { handleNativeProfileAPI } from "../../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../../src/codex/native-profile-manager";
-import { resolveCodexAccountForThread, clearThreadAccountMap } from "../../src/codex/routing";
+import { resolveCodexAccountForThread, previewCodexAccountForRequest, clearThreadAccountMap } from "../../src/codex/routing";
+import { markAccountNeedsReauth, clearAccountNeedsReauth, isAccountNeedsReauth } from "../../src/codex/account-runtime-state";
 import {
   acquireNativeMainProfileDrain,
   getNativeMainProfileRequestCount,
@@ -35,11 +39,13 @@ import {
 } from "../../src/server/lifecycle";
 import type { OcxConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { flushConfigDirHardeningForTests } from "../../src/config/paths";
+import { flushWindowsSecretAclReapsBeforeRemoval, setIcaclsRunnerForTests, setAsyncIcaclsRunnerForTests } from "../../src/lib/windows-secret-acl";
 
 // Phase 20 (260630_wsl-account-autoswitch): startup/lazy quota priming.
 
-const TEST_DIR = join(import.meta.dir, ".tmp-codex-quota-prime-test");
-const TEST_CODEX_HOME = join(TEST_DIR, "codex");
+let TEST_DIR = "";
+let TEST_CODEX_HOME = "";
 let previousOpencodexHome: string | undefined;
 let previousCodexHome: string | undefined;
 
@@ -98,7 +104,12 @@ describe("primeCodexPoolQuotas", () => {
   beforeEach(() => {
     previousOpencodexHome = process.env.OPENCODEX_HOME;
     previousCodexHome = process.env.CODEX_HOME;
-    if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
+    TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-quota-prime-"));
+    TEST_CODEX_HOME = join(TEST_DIR, "codex");
+    // This suite asserts WHAM/selection ownership, not OS permission mutation.
+    const aclSuccess = { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    setIcaclsRunnerForTests(() => aclSuccess);
+    setAsyncIcaclsRunnerForTests(async () => aclSuccess);
     mkdirSync(TEST_CODEX_HOME, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
     // Isolate the main-account source: TEST_CODEX_HOME has no auth.json, so the
@@ -112,13 +123,18 @@ describe("primeCodexPoolQuotas", () => {
     resetLifecycleDrainStateForTests();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     clearAccountQuota();
     clearThreadAccountMap();
     clearCodexQuotaPrimeState();
     clearMainAccountInfoCache();
     resetMainCodexAccountIdentityTrackingForTests();
     resetLifecycleDrainStateForTests();
+    await flushNativeMainStartupReleases();
+    await flushConfigDirHardeningForTests();
+    await flushWindowsSecretAclReapsBeforeRemoval(TEST_DIR);
+    setIcaclsRunnerForTests(null);
+    setAsyncIcaclsRunnerForTests(null);
     if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousOpencodexHome;
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -203,16 +219,74 @@ describe("primeCodexPoolQuotas", () => {
     const options: PrimeCodexPoolQuotasOptions = {
       reconcileMainAccount: () => false,
       readMainTokens: () => ({ access_token: "main-access", account_id: "main-account" }),
-      fetchMainInfo: async () => { reads += 1; return { email: null, plan: null, quota: null }; },
+      fetchMainInfo: async force => { expect(force).toBe(true); reads += 1; return { email: null, plan: null, quota: null }; },
     };
     try {
       await primeCodexPoolQuotas(config, "priority-failback", options);
       expect(reads).toBe(0);
       now += 300_001;
+      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, { resetCredits: 1 });
       await primeCodexPoolQuotas(config, "priority-failback", options);
       expect(reads).toBe(1);
     } finally {
       clock.mockRestore();
+    }
+  });
+
+  test("priority failback refreshes retained stale windows despite a recent credits cache write", async () => {
+    const config = makeConfig({ codexAccountPriorityFailback: true, activeCodexAccountId: "p2", codexAccountPriorities: { p1: 1 } });
+    seedPoolAccount(config, "p1"); seedPoolAccount(config, "p2");
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const originalFetch = globalThis.fetch;
+    const probed: string[] = [];
+    try {
+      for (const id of ["p1", "p2"]) saveCodexAccountCredential(id, {
+        ...readCodexAccountRecord(id)!.credential!, expiresAt: now + 3_600_000,
+      });
+      updateAccountQuota("p1", 100); updateAccountQuota("p2", 2);
+      expect(resolveCodexAccountForThread("partial-prime", config, now)).toBe("p2");
+      config.codexAccountAutoSwitchThresholds = { p1: 0 };
+      updateAccountQuota("p1", 10);
+      now += 300_001;
+      setAccountQuotaFromParsed("p1", { resetCredits: 1 });
+      updateAccountQuota("p2", 2);
+      globalThis.fetch = (async (_input, init) => {
+        probed.push(new Headers(init?.headers).get("chatgpt-account-id") ?? "missing");
+        return whamResponse(0);
+      }) as typeof fetch;
+      await primeCodexPoolQuotas(config, "pre-route");
+      expect(probed).toEqual([]);
+      expect(previewCodexAccountForRequest("partial-prime", config, now)).toBe("p2");
+      await primeCodexPoolQuotas(config, "priority-failback");
+      expect(probed).toEqual(["acct-p1"]);
+      expect(previewCodexAccountForRequest("partial-prime", config, now)).toBe("p1");
+      expect(resolveCodexAccountForThread("partial-prime", config, now)).toBe("p1");
+      await primeCodexPoolQuotas(config, "priority-failback");
+      expect(probed).toHaveLength(1);
+    } finally { globalThis.fetch = originalFetch; clock.mockRestore(); }
+  });
+
+  test("passive main failback refresh never clears an inference reauth mark", async () => {
+    const config = makeConfig({ codexAccountPriorityFailback: true });
+    seedMainAccount();
+    const originalFetch = globalThis.fetch;
+    let now = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    let calls = 0;
+    try {
+      globalThis.fetch = (async () => { calls++; return whamResponse(10); }) as typeof fetch;
+      await primeCodexPoolQuotas(config, "startup");
+      expect(calls).toBe(1);
+      markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+      now += 300_001;
+      setAccountQuotaFromParsed(MAIN_CODEX_ACCOUNT_ID, { resetCredits: 1 });
+      await primeCodexPoolQuotas(config, "priority-failback");
+      expect(calls).toBe(2);
+      expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+    } finally {
+      clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+      globalThis.fetch = originalFetch; clock.mockRestore();
     }
   });
 

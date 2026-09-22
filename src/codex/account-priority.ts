@@ -2,14 +2,15 @@ import { isValidCodexAccountId, MAIN_CODEX_ACCOUNT_ID } from "./account-id";
 import { DEFAULT_ACCOUNT_PRIORITY, normalizeAccountPriority } from "./pool-rotation";
 import type { OcxConfig } from "../types";
 import { deleteConfigTopLevelKey } from "../config/rebase-provenance";
+import { getEffectiveCodexAutoSwitchThreshold } from "./account-auto-switch";
 
 /** Shared cadence for the opt-in live priority recheck and its observation freshness. */
 export const CODEX_PRIORITY_FAILBACK_REFRESH_MS = 5 * 60_000;
 
-export function codexAccountPriorityFailbackEnabled(config: OcxConfig): boolean {
+export function codexAccountPriorityFailbackEnabled(config: OcxConfig, accountId: string): boolean {
   return config.codexAccountPriorityFailback === true
     && (config.accountPoolStrategy ?? "quota") === "quota"
-    && (config.autoSwitchThreshold ?? 80) > 0;
+    && getEffectiveCodexAutoSwitchThreshold(config, accountId) > 0;
 }
 
 /**
