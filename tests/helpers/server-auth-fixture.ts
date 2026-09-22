@@ -29,7 +29,7 @@ export function managementHeaders(initial?: HeadersInit): Headers {
 }
 
 /** A runner timeout does not cancel its async body or execute its local finally first. */
-function ownManagementCorsServer(server: ReturnType<typeof startServer>, restoreRuntime: () => void) {
+function ownManagementServer(server: ReturnType<typeof startServer>, restoreRuntime: () => void) {
   const abort = new AbortController();
   let body: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
@@ -62,18 +62,18 @@ function ownManagementCorsServer(server: ReturnType<typeof startServer>, restore
   };
 }
 
-export type ManagementCorsFixture = ReturnType<typeof ownManagementCorsServer>;
+export type ManagementServerFixture = ReturnType<typeof ownManagementServer>;
 
-/** Prepare real auth/ACL state while isolating diagnostics unrelated to CORS behavior. */
-export async function startManagementCorsFixture(
+/** Prepare real auth/ACL state while isolating unrelated host diagnostic projections. */
+export async function startManagementServerFixture(
   configDir: string,
   fixtureConfig: OcxConfig,
-): Promise<ManagementCorsFixture> {
+): Promise<ManagementServerFixture> {
   if (existsSync(configDir)) removeTreeWithRetry(configDir);
   mkdirSync(configDir, { recursive: true });
   process.env.OPENCODEX_HOME = configDir;
   saveConfig({ ...fixtureConfig, clientIntegrations: { codex: false } });
-  // Real config/token ACL preparation belongs to fixture readiness, not the CORS
+  // Real config/token ACL preparation belongs to fixture readiness, not the HTTP
   // response deadline. Keep the production startup and the ordinary 5s test limit.
   // Neither management endpoint exercises native Codex synchronization or the
   // developer's installed service. Keep those external owners outside this fixture.
@@ -82,10 +82,10 @@ export async function startManagementCorsFixture(
   });
   try {
     const server = startServer(0, {
-      inspectNativeCodexOwnership: ownedServiceHomeInspection("management CORS sandbox"),
+      inspectNativeCodexOwnership: ownedServiceHomeInspection("management HTTP sandbox"),
       managementApi: {
         // /api/settings projects runtime/service diagnostics, but their host probes
-        // are not CORS behavior. Keep admission, routing and response decoration real.
+        // are not auth/CORS behavior. Keep admission, routing and response decoration real.
         getCachedStartupHealth: async () => deriveStartupHealth({
           routingKind: "native", autostartEnabled: false, serviceInstalled: false,
           serviceViable: false, serviceEnabled: false, serviceRunning: false,
@@ -94,7 +94,7 @@ export async function startManagementCorsFixture(
         }),
       },
     });
-    return ownManagementCorsServer(server, () => runtime.mockRestore());
+    return ownManagementServer(server, () => runtime.mockRestore());
   } catch (error) {
     try {
       await waitForFailedStartRollback(error);
