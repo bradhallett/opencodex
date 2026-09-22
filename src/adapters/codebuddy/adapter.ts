@@ -129,6 +129,7 @@ export function createCodeBuddyAdapter(provider: OcxProviderConfig, deps: CodeBu
             tools: toolBridge.tools,
             emittedNameMap: toolBridge.emittedNameMap,
             maxTurnToolCalls: CODEBUDDY_TOOL_LIMITS.maxTurnToolCalls,
+            requireToolCall: toolBridge.requireToolCall,
           }
         : undefined;
       // argv is world-readable via process listing, so the folded system+developer prompt —
