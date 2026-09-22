@@ -202,6 +202,110 @@ describe("Desktop sync rechecks persisted state after discovery", () => {
       }
     });
   }
+  test("a desired-profile change during the Desktop write keeps the new profile without the old fingerprint", async () => {
+    // The marker commit must not stamp the fingerprint of the profile whose bytes were
+    // written (A) onto a different desired profile (B) saved by a concurrent writer while
+    // the Desktop write was in flight. B stays persisted and the sync reports the skip.
+    const profileA = {
+      version: 1 as const,
+      assignments: { "mock/hidden": { family: "opus" as const, alias: "claude-opus-4-8-20260201" } },
+      defaults: { opus: "mock/hidden", fable: null, sonnet: null, haiku: null },
+    };
+    const profileB = {
+      version: 1 as const,
+      assignments: { "mock/keep": { family: "sonnet" as const, alias: "claude-opus-4-8-20260202" } },
+      defaults: { opus: null, fable: null, sonnet: "mock/keep", haiku: null },
+    };
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "mock",
+      clientIntegrations: { grok: false },
+      providers: {
+        mock: { adapter: "openai-chat", baseUrl: "https://example.test/v1", models: ["keep", "hidden"] },
+        openai: { adapter: "openai-responses", baseUrl: "https://example.test/v1", contextWindow: 400_000 },
+      },
+      apiKeys: [{ id: "sync-key", name: "fixture", key: "ocx_old_sync_fixture", createdAt: "2026-01-01T00:00:00.000Z" }],
+      claudeCode: { desktopProfile: profileA },
+    };
+    writeFileSync(join(root, "config.json"), JSON.stringify(config));
+    const models: CatalogModel[] = [
+      { provider: "mock", id: "keep", contextWindow: 123_000 },
+      { provider: "mock", id: "hidden", contextWindow: 456_000 },
+    ];
+    const writes: Parameters<typeof writeDesktop3pConfig>[] = [];
+    const realRefresh = ownedRefresh.refreshOwnedIntegration;
+    const refresh = spyOn(ownedRefresh, "refreshOwnedIntegration").mockImplementation((input, options) =>
+      input.clientId === "mcode"
+        ? Promise.resolve({ client: "mcode", ok: true, changed: true })
+        : realRefresh(input, options));
+    const aside = spyOn(asideProfiles, "refreshAsideProfiles").mockResolvedValue([]);
+    try {
+      const results = await syncEnabledClientIntegrations(12345, config, {
+        fetchAllModels: async () => models,
+        writeDesktop3pConfig: (...args) => {
+          writes.push(args);
+          // A concurrent writer saves desired profile B while the Desktop write is in flight.
+          const drifted = structuredClone(config);
+          drifted.claudeCode = { desktopProfile: profileB };
+          writeFileSync(join(root, "config.json"), JSON.stringify(drifted));
+          return { written: true, path: "fixture", fingerprint: "0123456789abcdef" };
+        },
+      });
+      expect(writes).toHaveLength(1);
+      const outcome = results.find(result => result.client === "claude-desktop");
+      expect(outcome?.ok).toBe(false);
+      expect(outcome?.reason).toContain("desired profile changed during sync");
+      const persisted = JSON.parse(readFileSync(join(root, "config.json"), "utf8"));
+      expect(persisted.claudeCode.desktopProfile).toEqual(profileB);
+    } finally {
+      refresh.mockRestore();
+      aside.mockRestore();
+    }
+  });
+
+  test("an unchanged desired profile still stores the written fingerprint", async () => {
+    const profileA = {
+      version: 1 as const,
+      assignments: { "mock/hidden": { family: "opus" as const, alias: "claude-opus-4-8-20260201" } },
+      defaults: { opus: "mock/hidden", fable: null, sonnet: null, haiku: null },
+    };
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "mock",
+      clientIntegrations: { grok: false },
+      providers: {
+        mock: { adapter: "openai-chat", baseUrl: "https://example.test/v1", models: ["keep", "hidden"] },
+        openai: { adapter: "openai-responses", baseUrl: "https://example.test/v1", contextWindow: 400_000 },
+      },
+      apiKeys: [{ id: "sync-key", name: "fixture", key: "ocx_old_sync_fixture", createdAt: "2026-01-01T00:00:00.000Z" }],
+      claudeCode: { desktopProfile: profileA },
+    };
+    writeFileSync(join(root, "config.json"), JSON.stringify(config));
+    const models: CatalogModel[] = [
+      { provider: "mock", id: "keep", contextWindow: 123_000 },
+      { provider: "mock", id: "hidden", contextWindow: 456_000 },
+    ];
+    const realRefresh = ownedRefresh.refreshOwnedIntegration;
+    const refresh = spyOn(ownedRefresh, "refreshOwnedIntegration").mockImplementation((input, options) =>
+      input.clientId === "mcode"
+        ? Promise.resolve({ client: "mcode", ok: true, changed: true })
+        : realRefresh(input, options));
+    const aside = spyOn(asideProfiles, "refreshAsideProfiles").mockResolvedValue([]);
+    try {
+      const results = await syncEnabledClientIntegrations(12345, config, {
+        fetchAllModels: async () => models,
+        writeDesktop3pConfig: () => ({ written: true, path: "fixture", fingerprint: "0123456789abcdef" }),
+      });
+      expect(results.find(result => result.client === "claude-desktop")).toEqual({ client: "claude-desktop", ok: true, changed: true });
+      const persisted = JSON.parse(readFileSync(join(root, "config.json"), "utf8"));
+      expect(persisted.claudeCode.desktopProfile.appliedFingerprint).toBe("0123456789abcdef");
+      expect(persisted.claudeCode.desktopProfile.assignments).toEqual(profileA.assignments);
+    } finally {
+      refresh.mockRestore();
+      aside.mockRestore();
+    }
+  });
+
 });
 
 describe("ocx sync refreshes an already-owned MCode integration", () => {

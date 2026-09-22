@@ -232,15 +232,20 @@ export async function syncEnabledClientIntegrations(
         if (!r.written || !r.fingerprint) {
           out.push({ client: "claude-desktop", ok: false, reason: r.reason ?? "Claude Desktop write failed" });
         } else {
-          const { emptyDesktopProfile } = await import("../../claude/desktop-profile");
+          const { emptyDesktopProfile, sameProfileContent } = await import("../../claude/desktop-profile");
+          // The fingerprint belongs to the desired profile the write just used. If another
+          // writer saved a different desired profile between the Desktop write and this marker
+          // commit, stamping it would claim B is applied while the disk holds A's bytes.
+          const writtenProfile = latest.claudeCode?.desktopProfile ?? emptyDesktopProfile();
           const marked = mutatePersistedConfig(persisted => {
-            const profile = persisted.claudeCode?.desktopProfile
-              ?? latest.claudeCode?.desktopProfile
-              ?? emptyDesktopProfile();
+            const profile = persisted.claudeCode?.desktopProfile;
+            if (profile && !sameProfileContent(profile, writtenProfile)) {
+              return { changed: false, value: false };
+            }
             persisted.claudeCode = {
               ...(persisted.claudeCode ?? {}),
               desktopProfile: {
-                ...profile,
+                ...(profile ?? writtenProfile),
                 appliedFingerprint: r.fingerprint,
                 appliedAt: new Date().toISOString(),
               },
@@ -248,7 +253,9 @@ export async function syncEnabledClientIntegrations(
             return { changed: true, value: true };
           });
           out.push(marked.status === "unavailable"
-            ? { client: "claude-desktop", ok: false, reason: `Claude Desktop applied marker was not saved (${marked.reason})` }
+            ? { client: "claude-desktop", ok: false, reason: "Claude Desktop applied marker was not saved (" + marked.reason + ")" }
+            : marked.value === false
+            ? { client: "claude-desktop", ok: false, reason: "Claude Desktop desired profile changed during sync; applied marker skipped" }
             : { client: "claude-desktop", ok: true, changed: true });
         }
       }
