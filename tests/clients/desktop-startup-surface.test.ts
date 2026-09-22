@@ -195,7 +195,12 @@ describe("desktop startup surface", () => {
     const begin = startup.slice(startup.indexOf("pub fn begin("), startup.indexOf("fn settle("));
     expect(begin).toContain("run(&app, started).await;");
     expect(begin.slice(begin.indexOf("run(&app, started).await;"))).toContain("settle(");
-    expect(begin).toContain("sleep_until(started + DEADLINE + SETTLE_GRACE)");
+    // The consent wait moves the ceiling, so the guard re-reads the shared deadline and stays
+    // quiet while a prompt is up instead of racing a fixed wakeup.
+    expect(begin).toContain("startup.set_deadline(started + DEADLINE)");
+    expect(begin).toContain("startup.consent_pending()");
+    expect(begin).toContain("startup.deadline() + SETTLE_GRACE");
+    expect(begin).toContain("sleep_until(wake)");
     // Idempotent, and bound to the run it was started for: it may not overwrite a real result,
     // and a guard left over from an earlier run may not fail the retry that replaced it.
     const settle = startup.slice(startup.indexOf("fn settle("), startup.indexOf("async fn run("));
