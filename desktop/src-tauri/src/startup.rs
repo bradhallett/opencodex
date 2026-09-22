@@ -477,7 +477,10 @@ impl Startup {
     }
 
     fn with_reporting<T>(&self, report: impl FnOnce() -> T) -> T {
-        let _reporting = self.reporting.lock().unwrap_or_else(PoisonError::into_inner);
+        let _reporting = self
+            .reporting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         report()
     }
 
