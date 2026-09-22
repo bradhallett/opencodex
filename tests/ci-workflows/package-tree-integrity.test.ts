@@ -7,14 +7,46 @@ import {
   createRuntimePackageTreeIntegrityGuard,
   type PackageTreeObservation,
 } from "../../src/lib/package-tree-integrity";
-import { startServer } from "../../src/server";
+import { startServer, waitForFailedStartRollback } from "../../src/server";
+import { stopServerListener } from "../../src/server/lifecycle";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { settleServerAuthFixture } from "../helpers/server-auth-fixture";
+import { ownedServiceHomeInspection } from "../helpers/owned-service-home-inspection";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-package-tree-integrity");
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
+let ownedServer: ReturnType<typeof startServer> | null = null;
+let caseAbort = new AbortController();
+let caseWork: Promise<void> | undefined;
+let closing = false;
+
+async function prepareServer(deps: Parameters<typeof startServer>[1]): Promise<void> {
+  // Package integrity uses the real listener and guard, not native client sync.
+  saveConfig({ ...config(), clientIntegrations: { codex: false } });
+  try {
+    ownedServer = startServer(0, {
+      inspectNativeCodexOwnership: ownedServiceHomeInspection("package integrity sandbox"),
+      ...deps,
+    });
+  } catch (error) {
+    await waitForFailedStartRollback(error);
+    throw error;
+  }
+}
+
+function runServerCase(work: (server: ReturnType<typeof startServer>, signal: AbortSignal) => Promise<void>): Promise<void> {
+  const server = ownedServer;
+  if (!server) throw new Error("package integrity server was not prepared");
+  const signal = caseAbort.signal;
+  caseWork = Promise.resolve().then(() => work(server, signal)).catch(error => {
+    if (closing && signal.aborted && error instanceof Error && error.name === "AbortError") return;
+    throw error;
+  });
+  return caseWork;
+}
 
 function config(): OcxConfig {
   return {
@@ -32,13 +64,26 @@ function config(): OcxConfig {
 }
 
 beforeEach(() => {
+  caseAbort = new AbortController();
+  caseWork = undefined;
+  closing = false;
   if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
   mkdirSync(TEST_DIR, { recursive: true });
   process.env.OPENCODEX_HOME = TEST_DIR;
   isolatedCodexHome = installIsolatedCodexHome("ocx-package-tree-integrity-");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  closing = true;
+  caseAbort.abort();
+  // A runner timeout does not settle the test body. Start the shared real stop
+  // before waiting for the body; neither may outlive restoration/removal of its home.
+  const stopped = Promise.allSettled([ownedServer ? stopServerListener(ownedServer) : Promise.resolve()]);
+  await Promise.allSettled(caseWork ? [caseWork] : []);
+  const [result] = await stopped;
+  if (result.status === "rejected") throw result.reason;
+  ownedServer = null;
+  await settleServerAuthFixture(TEST_DIR, isolatedCodexHome?.path);
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   isolatedCodexHome?.restore();
@@ -638,15 +683,14 @@ describe("package tree integrity", () => {
     expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
   });
 
-  test("degrades health and refuses Responses requests with a restart-required error", async () => {
-    saveConfig(config());
+  describe("restart-required server", () => {
     const packageTreeIntegrity = {
       status: () => ({ ok: false as const, reason: "package_tree_replaced" as const }),
       dispose: () => {},
     };
-    const server = startServer(0, { packageTreeIntegrity });
-    try {
-      const health = await fetch(new URL("/healthz", server.url));
+    beforeEach(() => prepareServer({ packageTreeIntegrity }));
+    test("degrades health and refuses Responses requests with a restart-required error", () => runServerCase(async (server, signal) => {
+      const health = await fetch(new URL("/healthz", server.url), { signal });
       expect(health.status).toBe(503);
       expect(health.headers.get("retry-after")).toBe("5");
       expect(await health.json()).toMatchObject({
@@ -657,6 +701,7 @@ describe("package tree integrity", () => {
 
       const response = await fetch(new URL("/v1/responses", server.url), {
         method: "POST",
+        signal,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "test/gpt-test", input: "hello" }),
       });
@@ -669,41 +714,48 @@ describe("package tree integrity", () => {
           message: expect.stringContaining("restart"),
         },
       });
-    } finally {
-      await server.stop(true);
-    }
+    }));
   });
 
-  test("the default server guard accepts a restart after a sustained replacement", async () => {
-    saveConfig(config());
+  describe("sustained package replacement", () => {
     const base: PackageTreeObservation = {
       device: 1n, inode: 10n, contentTimeNs: 100n, size: 500n,
     };
     let observation: PackageTreeObservation = base;
     const pending: Array<() => void> = [];
     let restartAcceptances = 0;
-    const server = startServer(0, {
-      packageTreeInstaller: "npm",
-      observePackageTree: () => observation,
-      packageTreeIntegrityOptions: {
-        replacedRestartDelayMs: 5_000,
-        schedule: callback => { pending.push(callback); },
-      },
-      acceptSystemRestart: () => {
-        restartAcceptances += 1;
-        return {
-          accepted: true,
-          alreadyDraining: false,
-          activeTurnCount: 0,
-          drainTimeoutMs: 60_000,
-        };
-      },
+    beforeEach(() => {
+      observation = base;
+      pending.length = 0;
+      restartAcceptances = 0;
+      return prepareServer({
+        packageTreeInstaller: "npm",
+        observePackageTree: () => observation,
+        packageTreeIntegrityOptions: {
+          replacedRestartDelayMs: 5_000,
+          schedule: callback => { pending.push(callback); },
+        },
+        acceptSystemRestart: () => {
+          restartAcceptances += 1;
+          return {
+            accepted: true,
+            alreadyDraining: false,
+            activeTurnCount: 0,
+            drainTimeoutMs: 60_000,
+          };
+        },
+      });
     });
-    try {
-      expect((await fetch(new URL("/healthz", server.url))).status).toBe(200);
+    test("the default server guard accepts a restart after a sustained replacement", () => runServerCase(async (server, signal) => {
+      const healthy = await fetch(new URL("/healthz", server.url), { signal });
+      expect(healthy.status).toBe(200);
+      await healthy.text();
       observation = { ...base, inode: 11n, contentTimeNs: 200n };
       await Bun.sleep(1_100); // expire the guard's successful-observation cache
-      expect((await fetch(new URL("/healthz", server.url))).status).toBe(503);
+      signal.throwIfAborted();
+      const replaced = await fetch(new URL("/healthz", server.url), { signal });
+      expect(replaced.status).toBe(503);
+      await replaced.text();
       expect(restartAcceptances).toBe(0);
       expect(pending).toHaveLength(1);
 
@@ -711,54 +763,59 @@ describe("package tree integrity", () => {
       await Promise.resolve(); // the deferred verify step runs as a microtask
       expect(restartAcceptances).toBe(1);
       expect(pending).toHaveLength(0);
-    } finally {
-      await server.stop(true);
-    }
+    }));
   });
 
-  test("server.stop() disarms a pending package-tree restart callback", async () => {
-    saveConfig(config());
+  describe("pending package restart shutdown", () => {
     const base: PackageTreeObservation = {
       device: 1n, inode: 10n, contentTimeNs: 100n, size: 500n,
     };
     let observation: PackageTreeObservation = base;
     const pending: Array<() => void> = [];
     let restartAcceptances = 0;
-    const server = startServer(0, {
-      packageTreeInstaller: "npm",
-      observePackageTree: () => observation,
-      packageTreeIntegrityOptions: {
-        replacedRestartDelayMs: 5_000,
-        schedule: callback => {
-          pending.push(callback);
-          return () => {
-            const index = pending.indexOf(callback);
-            if (index >= 0) pending.splice(index, 1);
+    beforeEach(() => {
+      observation = base;
+      pending.length = 0;
+      restartAcceptances = 0;
+      return prepareServer({
+        packageTreeInstaller: "npm",
+        observePackageTree: () => observation,
+        packageTreeIntegrityOptions: {
+          replacedRestartDelayMs: 5_000,
+          schedule: callback => {
+            pending.push(callback);
+            return () => {
+              const index = pending.indexOf(callback);
+              if (index >= 0) pending.splice(index, 1);
+            };
+          },
+        },
+        acceptSystemRestart: () => {
+          restartAcceptances += 1;
+          return {
+            accepted: true,
+            alreadyDraining: false,
+            activeTurnCount: 0,
+            drainTimeoutMs: 60_000,
           };
         },
-      },
-      acceptSystemRestart: () => {
-        restartAcceptances += 1;
-        return {
-          accepted: true,
-          alreadyDraining: false,
-          activeTurnCount: 0,
-          drainTimeoutMs: 60_000,
-        };
-      },
+      });
     });
-    try {
-      expect((await fetch(new URL("/healthz", server.url))).status).toBe(200);
+    test("server.stop() disarms a pending package-tree restart callback", () => runServerCase(async (server, signal) => {
+      const healthy = await fetch(new URL("/healthz", server.url), { signal });
+      expect(healthy.status).toBe(200);
+      await healthy.text();
       observation = { ...base, inode: 11n, contentTimeNs: 200n };
       await Bun.sleep(1_100); // expire the guard's successful-observation cache
-      expect((await fetch(new URL("/healthz", server.url))).status).toBe(503);
+      signal.throwIfAborted();
+      const replaced = await fetch(new URL("/healthz", server.url), { signal });
+      expect(replaced.status).toBe(503);
+      await replaced.text();
       expect(pending).toHaveLength(1);
 
-      await server.stop(true);
+      await stopServerListener(server);
       expect(pending).toHaveLength(0);
       expect(restartAcceptances).toBe(0);
-    } finally {
-      await server.stop(true).catch(() => {});
-    }
+    }));
   });
 });
