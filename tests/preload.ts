@@ -117,16 +117,22 @@ if (process.platform === "win32" && lockPath && runLock.owner) {
 
 // Clean up only the root this preload created. The `bun run test` wrapper owns its own.
 // Bun test workers do not reliably run process `exit` handlers, so the test lifecycle hook
-// is primary; the process hook remains a best-effort fallback for setup failures.
-let cleanupComplete = false;
-const cleanupIsolatedRoot = () => {
-  if (cleanupComplete) return;
-  try {
-    isolated.cleanup();
-    cleanupComplete = true;
-  } catch {
-    // The wrapper contains this root, and a later bare run reclaims it after the grace period.
-  }
-};
-afterAll(cleanupIsolatedRoot);
-process.on("exit", cleanupIsolatedRoot);
+// is primary; the process hook retries only an already-drained root. Setup failures
+// leave an ownership-marked root for stale recovery rather than blocking on child handles.
+// Load cleanup dependencies only AFTER home isolation, guard arming, and run-lock admission.
+const { createTestSandboxCleanup } = await import("./helpers/test-sandbox-cleanup");
+const { flushWindowsSecretAclReapsBeforeRemoval, windowsSecretAclReapPendingAtOrBelow } =
+  await import("../src/lib/windows-secret-acl");
+const cleanup = createTestSandboxCleanup({
+  drainProducers: async () => {
+    const { flushConfigDirHardeningForTests } = await import("../src/config/paths");
+    const { flushNativeMainStartupReleases } = await import("../src/codex/native-profile-startup");
+    await flushConfigDirHardeningForTests();
+    await flushNativeMainStartupReleases();
+  },
+  waitForReaps: () => flushWindowsSecretAclReapsBeforeRemoval(isolated.root),
+  hasPendingReaps: () => windowsSecretAclReapPendingAtOrBelow(isolated.root),
+  remove: () => isolated.cleanup(),
+});
+afterAll(cleanup.afterAll);
+process.on("exit", cleanup.onExit);
