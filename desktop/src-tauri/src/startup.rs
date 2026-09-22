@@ -292,6 +292,39 @@ pub struct Registration {
 struct Live {
     latest: Progress,
     reported: Vec<&'static str>,
+    /// The takeover decision state. Answered stays set until the run clears it: the deadline
+    /// extension lands between the decision and the clear, and the guard must keep waiting
+    /// through both.
+    consent: ConsentState,
+    /// The current run's ceiling.
+    ///
+    /// The consent wait moves it by however long the person took, so the deadline guard
+    /// re-reads it instead of racing a stale copy. It lives under this lock so the expiry
+    /// decision and the terminal publish are one critical section against consent transitions.
+    deadline: Instant,
+}
+
+impl Live {
+    fn is_settled(&self) -> bool {
+        self.latest.phase == Phase::Ready.id() || self.latest.phase == Phase::Failed.id()
+    }
+
+    fn publish(&mut self, progress: &mut Progress, failed_in: Option<Phase>) {
+        if !self.reported.contains(&progress.phase)
+            && progress.phase != Phase::Ready.id()
+            && progress.phase != Phase::Failed.id()
+        {
+            self.reported.push(progress.phase);
+        }
+        progress.completed = self
+            .reported
+            .iter()
+            .copied()
+            .filter(|id| *id != progress.phase)
+            .collect();
+        progress.failed_phase = failed_in.map(Phase::id);
+        self.latest = progress.clone();
+    }
 }
 
 /// The takeover prompt's decision state.
@@ -302,6 +335,18 @@ enum ConsentState {
     Pending(oneshot::Sender<bool>),
     /// The user answered and the run has not yet consumed the extension.
     Answered,
+}
+
+/// What the deadline guard's expiry step found.
+enum Expiry {
+    /// The run is terminal or superseded; the guard is done.
+    Dead,
+    /// A consent prompt is pending or its answer is being consumed; re-check shortly.
+    Blocked,
+    /// Not expired yet; the current ceiling plus its grace.
+    Waiting(Instant),
+    /// Expired and the failure was published in the same critical section; emit it.
+    Fired(Progress),
 }
 
 /// The sequence's managed state: the latest thing it said, what it has already finished, and
@@ -316,15 +361,6 @@ pub struct Startup {
     generation: AtomicU64,
     /// The outcome of the one-time registration, once it has happened.
     registered: Mutex<Option<Registration>>,
-    /// The takeover decision state. `Answered` stays set until the run clears it: the deadline
-    /// extension lands between the decision and the clear, and the guard must keep waiting
-    /// through both.
-    consent: Mutex<ConsentState>,
-    /// The current run's ceiling.
-    ///
-    /// The consent wait moves it by however long the person took, so the deadline guard
-    /// re-reads it instead of racing a stale copy.
-    deadline: Mutex<Instant>,
 }
 
 impl Startup {
@@ -333,12 +369,12 @@ impl Startup {
             live: Mutex::new(Live {
                 latest: Progress::new(Phase::NotStarted, 0),
                 reported: Vec::new(),
+                consent: ConsentState::Idle,
+                deadline: Instant::now(),
             }),
             running: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             registered: Mutex::new(None),
-            consent: Mutex::new(ConsentState::Idle),
-            deadline: Mutex::new(Instant::now()),
         }
     }
 
@@ -368,46 +404,48 @@ impl Startup {
     /// The user's answer to a pending takeover prompt. Nothing pending is a no-op: a retry
     /// or a late click must never be read as a decision for a prompt that is not up.
     pub fn decide_takeover(&self, approved: bool) {
-        let mut consent = self.consent.lock().unwrap_or_else(PoisonError::into_inner);
-        match std::mem::replace(&mut *consent, ConsentState::Idle) {
+        let mut live = self.live();
+        match std::mem::replace(&mut live.consent, ConsentState::Idle) {
             ConsentState::Pending(sender) => {
-                *consent = ConsentState::Answered;
+                live.consent = ConsentState::Answered;
                 let _ = sender.send(approved);
             }
             // A late click or a duplicate decision answers nothing: restore what was there.
-            prior => *consent = prior,
+            prior => live.consent = prior,
         }
     }
 
-    fn await_consent(&self) -> oneshot::Receiver<bool> {
+    /// Register the pending prompt, unless the run already ended. A guard expiry can win the
+    /// race against the prompt being posted; posting one anyway would leave a receiver that
+    /// waits forever on a decision nobody can see.
+    fn await_consent(&self) -> Option<oneshot::Receiver<bool>> {
+        let mut live = self.live();
+        if live.is_settled() {
+            return None;
+        }
         let (sender, receiver) = oneshot::channel();
-        *self.consent.lock().unwrap_or_else(PoisonError::into_inner) = ConsentState::Pending(sender);
-        receiver
+        live.consent = ConsentState::Pending(sender);
+        Some(receiver)
     }
 
-    fn clear_consent(&self) {
-        *self.consent.lock().unwrap_or_else(PoisonError::into_inner) = ConsentState::Idle;
-    }
-
-    fn deadline(&self) -> Instant {
-        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Consume the decision and publish the extended ceiling in the same critical section, so
+    /// the guard's next expiry check sees either a pending/answered prompt or the new deadline,
+    /// never the gap between them.
+    fn resolve_consent(&self, deadline: Instant) {
+        let mut live = self.live();
+        live.deadline = deadline;
+        live.consent = ConsentState::Idle;
     }
 
     fn set_deadline(&self, deadline: Instant) {
-        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner) = deadline;
-    }
-
-    /// Whether the sequence is waiting on the user's takeover decision. The budget bounds the
-    /// machinery, not the person, so the guard stays quiet while a prompt is up.
-    fn consent_pending(&self) -> bool {
-        !matches!(*self.consent.lock().unwrap_or_else(PoisonError::into_inner), ConsentState::Idle)
+        self.live().deadline = deadline;
     }
 
     fn restart(&self) {
         // A retry during a pending consent prompt drops the sender, so the waiting run reads
         // the decision as declined rather than pairing an old prompt with a new sequence.
-        self.clear_consent();
         let mut live = self.live();
+        live.consent = ConsentState::Idle;
         live.reported.clear();
         live.latest = Progress::new(Phase::NotStarted, 0);
     }
@@ -416,27 +454,80 @@ impl Startup {
     ///
     /// A terminal state is the page's only promise that the screen has stopped changing, so it is
     /// also what tells a late guard there is nothing left to report.
+    #[cfg(test)]
     fn settled(&self) -> bool {
-        let phase = self.live().latest.phase;
-        phase == Phase::Ready.id() || phase == Phase::Failed.id()
+        self.live().is_settled()
     }
 
     fn publish(&self, progress: &mut Progress, failed_in: Option<Phase>) {
         let mut live = self.live();
-        if !live.reported.contains(&progress.phase)
-            && progress.phase != Phase::Ready.id()
-            && progress.phase != Phase::Failed.id()
-        {
-            live.reported.push(progress.phase);
+        live.publish(progress, failed_in);
+    }
+
+    /// Publish a terminal state for a run that did not report one itself.
+    ///
+    /// Idempotent and bound to the run it was started for: a run that already said Ready or
+    /// Failed is left alone, and a caller whose run has been superseded by a retry says
+    /// nothing. The check and the publish are one critical section, so no other reporter can
+    /// slip a state between them.
+    fn settle(&self, started: Instant, generation: u64, reason: String) -> Option<Progress> {
+        let mut live = self.live();
+        self.settle_locked(&mut live, started, generation, reason)
+    }
+
+    fn settle_locked(
+        &self,
+        live: &mut Live,
+        started: Instant,
+        generation: u64,
+        reason: String,
+    ) -> Option<Progress> {
+        if self.generation.load(Ordering::Acquire) != generation || live.is_settled() {
+            return None;
         }
-        progress.completed = live
-            .reported
-            .iter()
-            .copied()
-            .filter(|id| *id != progress.phase)
-            .collect();
-        progress.failed_phase = failed_in.map(Phase::id);
-        live.latest = progress.clone();
+        let stalled_in = live.latest.phase;
+        let elapsed_ms = elapsed(started);
+        let mut progress = Progress::new(Phase::Failed, elapsed_ms);
+        progress.diagnostic = Some(
+            [
+                format!(
+                    "OpenCodex desktop {} on {}",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS
+                ),
+                format!("state: {stalled_in}"),
+                format!("reason: {reason}"),
+                format!("elapsed: {elapsed_ms}ms"),
+            ]
+            .join("\n"),
+        );
+        progress.detail = Some(reason);
+        live.publish(&mut progress, Phase::from_id(stalled_in));
+        Some(progress)
+    }
+
+    /// The deadline guard's atomic expiry step. The deadline read, the consent state, the
+    /// terminal check and the failure publish all share one critical section, so a prompt
+    /// posted or an answer consumed on the other side of the lock can never meet a failure
+    /// already in flight.
+    fn expire_run(&self, started: Instant, generation: u64, reason: String) -> Expiry {
+        let mut live = self.live();
+        if self.generation.load(Ordering::Acquire) != generation || live.is_settled() {
+            return Expiry::Dead;
+        }
+        if !matches!(live.consent, ConsentState::Idle) {
+            // A prompt is up or an answer is being consumed. The budget does not run
+            // against the person, so there is nothing to expire.
+            return Expiry::Blocked;
+        }
+        let wake = live.deadline + SETTLE_GRACE;
+        if wake > Instant::now() {
+            return Expiry::Waiting(wake);
+        }
+        match self.settle_locked(&mut live, started, generation, reason) {
+            Some(progress) => Expiry::Fired(progress),
+            None => Expiry::Dead,
+        }
     }
 }
 
@@ -472,35 +563,36 @@ pub fn begin(app: &AppHandle) {
     let guard = app.clone();
     tauri::async_runtime::spawn(async move {
         // The consent wait extends the shared deadline, and while a prompt is up the budget
-        // does not run at all. Re-reading both keeps the guard honest for a stalled run
-        // without failing one that is legitimately waiting on the person.
+        // does not run at all. The expiry check, the consent state and the terminal publish
+        // share one critical section, so a prompt posted or an answer consumed can never meet
+        // a failure already in flight.
         loop {
             let Some(startup) = guard.try_state::<Startup>() else {
                 return;
             };
-            if startup.generation.load(Ordering::Acquire) != generation || startup.settled() {
-                return;
+            match startup.expire_run(
+                started,
+                generation,
+                format!(
+                    "the startup sequence did not finish within {} seconds",
+                    DEADLINE.as_secs()
+                ),
+            ) {
+                Expiry::Dead => return,
+                Expiry::Blocked => {
+                    sleep(POLL).await;
+                    continue;
+                }
+                Expiry::Waiting(wake) => {
+                    sleep_until(wake).await;
+                    continue;
+                }
+                Expiry::Fired(progress) => {
+                    let _ = guard.emit(PHASE_EVENT, progress);
+                    return;
+                }
             }
-            if startup.consent_pending() {
-                sleep(POLL).await;
-                continue;
-            }
-            let wake = startup.deadline() + SETTLE_GRACE;
-            if wake > Instant::now() {
-                sleep_until(wake).await;
-                continue;
-            }
-            break;
         }
-        settle(
-            &guard,
-            started,
-            generation,
-            format!(
-                "the startup sequence did not finish within {} seconds",
-                DEADLINE.as_secs()
-            ),
-        );
     });
 
     tauri::async_runtime::spawn(async move {
@@ -525,27 +617,10 @@ fn settle(app: &AppHandle, started: Instant, generation: u64, reason: String) {
     let Some(startup) = app.try_state::<Startup>() else {
         return;
     };
-    if startup.generation.load(Ordering::Acquire) != generation || startup.settled() {
+    let Some(progress) = startup.settle(started, generation, reason) else {
         return;
-    }
-    let stalled_in = startup.latest().phase;
-    let elapsed_ms = elapsed(started);
-    let mut progress = Progress::new(Phase::Failed, elapsed_ms);
-    progress.diagnostic = Some(
-        [
-            format!(
-                "OpenCodex desktop {} on {}",
-                env!("CARGO_PKG_VERSION"),
-                std::env::consts::OS
-            ),
-            format!("state: {stalled_in}"),
-            format!("reason: {reason}"),
-            format!("elapsed: {elapsed_ms}ms"),
-        ]
-        .join("\n"),
-    );
-    progress.detail = Some(reason);
-    emit(app, progress, Phase::from_id(stalled_in));
+    };
+    let _ = app.emit(PHASE_EVENT, progress);
 }
 
 async fn run(app: &AppHandle, started: Instant) {
@@ -666,7 +741,12 @@ async fn run(app: &AppHandle, started: Instant) {
                     let Some(startup) = app.try_state::<Startup>() else {
                         return;
                     };
-                    let receiver = startup.await_consent();
+                    let Some(receiver) = startup.await_consent() else {
+                        // The run already ended (an expiry won the race to the terminal
+                        // state). Posting the prompt now would wait on a decision nobody
+                        // can see, so the run stops here instead.
+                        return;
+                    };
                     let mut progress = Progress::new(Phase::Attaching, elapsed(started));
                     progress.detail = Some(
                         "a runtime was already listening; waiting for a decision on taking it over"
@@ -685,10 +765,9 @@ async fn run(app: &AppHandle, started: Instant) {
                     let asked = Instant::now();
                     let approved = receiver.await.unwrap_or(false);
                     deadline += asked.elapsed();
-                    // The guard reads the shared deadline only after the prompt is no longer
-                    // pending, so the extension has to land first.
-                    startup.set_deadline(deadline);
-                    startup.clear_consent();
+                    // The extension and the clear are one critical section: the guard sees
+                    // either a prompt still pending or the moved ceiling, never the gap.
+                    startup.resolve_consent(deadline);
                     if !approved {
                         attach_as_guest(
                             app,
@@ -1283,12 +1362,13 @@ fn elapsed(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        attach_plan, shows_window, unavailable, AttachPlan, LaunchOrigin, Phase, Progress,
-        Startup, AUTOSTART_FLAG, DEADLINE, PHASES, POLL,
+        attach_plan, shows_window, unavailable, AttachPlan, ConsentState, Expiry, LaunchOrigin,
+        Phase, Progress, Startup, AUTOSTART_FLAG, DEADLINE, PHASES, POLL,
     };
     use crate::ownership::Consent;
     use crate::resolve::Takeover;
     use crate::tray_availability::TrayAvailability;
+    use std::sync::atomic::Ordering;
     use tokio::time::Duration;
 
     fn supported() -> Takeover {
@@ -1311,7 +1391,7 @@ mod tests {
         // The waiting run reads the dropped sender as declined, so a stale prompt can never
         // pair a decision meant for it with the retried sequence.
         let startup = Startup::new();
-        let mut receiver = startup.await_consent();
+        let mut receiver = startup.await_consent().expect("no terminal state yet");
         startup.restart();
         assert!(matches!(
             receiver.try_recv(),
@@ -1457,5 +1537,86 @@ mod tests {
             .iter()
             .all(|budget| *budget <= Duration::from_secs(45)));
         assert!(POLL < DEADLINE);
+    }
+
+    #[test]
+    fn an_expired_run_publishes_failed_in_the_same_step() {
+        // The expiry decision and the terminal publish share one critical section: an expired
+        // deadline with no prompt up fails the run, and the failure is already there when the
+        // call returns.
+        let startup = Startup::new();
+        startup.generation.store(1, Ordering::SeqCst);
+        startup.set_deadline(tokio::time::Instant::now() - Duration::from_secs(60));
+        match startup.expire_run(
+            tokio::time::Instant::now() - Duration::from_secs(60),
+            1,
+            "expired".to_owned(),
+        ) {
+            Expiry::Fired(progress) => {
+                assert_eq!(progress.phase, Phase::Failed.id());
+                assert!(progress.can_retry);
+            }
+            _ => panic!("an expired deadline with no consent must fire"),
+        }
+        assert!(startup.settled());
+        // A second expiry for the same run says nothing.
+        assert!(matches!(
+            startup.expire_run(tokio::time::Instant::now(), 1, "again".to_owned()),
+            Expiry::Dead
+        ));
+    }
+
+    #[test]
+    fn a_pending_prompt_blocks_expiry_and_the_prompt_still_resolves() {
+        // The losing side of the race the guard used to win: the prompt is up while the
+        // deadline sits in the past. Expiry must yield, and the user's answer must still
+        // reach the waiting run.
+        let startup = Startup::new();
+        startup.generation.store(1, Ordering::SeqCst);
+        startup.set_deadline(tokio::time::Instant::now() - Duration::from_secs(60));
+        let mut receiver = startup.await_consent().expect("no terminal state yet");
+        assert!(matches!(
+            startup.expire_run(tokio::time::Instant::now(), 1, "expired".to_owned()),
+            Expiry::Blocked
+        ));
+        startup.decide_takeover(true);
+        assert_eq!(receiver.try_recv(), Ok(true));
+        // The answer was consumed but the extension has not landed yet: still not expirable.
+        assert!(matches!(
+            startup.expire_run(tokio::time::Instant::now(), 1, "expired".to_owned()),
+            Expiry::Blocked
+        ));
+        // Once the run publishes the moved ceiling the guard waits on it instead of firing.
+        startup.resolve_consent(tokio::time::Instant::now() + Duration::from_secs(60));
+        assert!(matches!(
+            startup.expire_run(tokio::time::Instant::now(), 1, "expired".to_owned()),
+            Expiry::Waiting(_)
+        ));
+    }
+
+    #[test]
+    fn a_terminal_run_posts_no_prompt() {
+        // The other half of the race: the failure already landed, so the ask path must not
+        // register a prompt that would wait on a decision nobody can see.
+        let startup = Startup::new();
+        startup.generation.store(1, Ordering::SeqCst);
+        let mut terminal = Progress::new(Phase::Failed, 1);
+        startup.publish(&mut terminal, None);
+        assert!(startup.await_consent().is_none());
+        // And the consent state stays idle, so a later run is not shadowed by a stale prompt.
+        assert!(matches!(startup.live().consent, ConsentState::Idle));
+    }
+
+    #[test]
+    fn a_superseded_guard_reports_nothing() {
+        // A retry bumped the generation: the old guard's expiry is dead even with the
+        // deadline in the past.
+        let startup = Startup::new();
+        startup.generation.store(2, Ordering::SeqCst);
+        startup.set_deadline(tokio::time::Instant::now() - Duration::from_secs(60));
+        assert!(matches!(
+            startup.expire_run(tokio::time::Instant::now(), 1, "expired".to_owned()),
+            Expiry::Dead
+        ));
     }
 }
