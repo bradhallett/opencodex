@@ -267,15 +267,37 @@ test("8b. closing or saving another layer warns about a parked edit", async () =
     keepEditing.click();
   });
 
+  await act(async () => { navButtons()[0]!.click(); });
+  expect(fields().body.value).toBe("Parked work in progress.");
+  await act(async () => { navButtons()[1]!.click(); });
+
   const save = [...dialog().querySelectorAll("button")].find(button => button.textContent?.includes("Save"))!;
   await act(async () => { save.click(); });
   expect(calls.filter(call => call.method === "PUT")).toHaveLength(0);
   expect(dialog().querySelector(".codex-set-custom-dialog__discard")).not.toBeNull();
+  expect(dialog().textContent).toContain("Discard unsaved edits to other layers and save this layer?");
   await act(async () => {
-    const discard = [...dialog().querySelectorAll("button")].find(button => button.textContent?.includes("Discard"))!;
-    discard.click();
+    const confirmSave = [...dialog().querySelectorAll("button")].find(button => button.textContent === "Save")!;
+    confirmSave.click();
   });
   expect(calls.filter(call => call.method === "PUT")).toHaveLength(1);
+  await act(async () => { root.unmount(); });
+});
+
+test("8c. discarding parked edits on close closes without a PUT", async () => {
+  const calls = stubRoutes(call => call.url.includes("/text")
+    ? json({ ok: true, layers: {} }) : json(snapshot({ custom: THREE })));
+  const { container, root } = await mount();
+  await openEditor(container, "aaaaaa");
+  await act(async () => { typeInto(fields().body, "Parked work in progress."); });
+  await act(async () => { navButtons()[1]!.click(); });
+  await act(async () => { dialog().dispatchEvent(new testWindow.Event("cancel", { cancelable: true })); });
+  await act(async () => {
+    const discard = [...dialog().querySelectorAll("button")].find(button => button.textContent === "Discard")!;
+    discard.click();
+  });
+  expect(testWindow.document.querySelector(".codex-set-custom-dialog")).toBeNull();
+  expect(calls.filter(call => call.method === "PUT")).toHaveLength(0);
   await act(async () => { root.unmount(); });
 });
 

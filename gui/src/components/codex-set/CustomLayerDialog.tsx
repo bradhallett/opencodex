@@ -69,8 +69,6 @@ export default function CustomLayerDialog({
    */
   const draftsRef = useRef(new Map<string, { title: string; body: string }>());
   const [parkedDirty, setParkedDirty] = useState(false);
-  const othersRef = useRef(others);
-  useEffect(() => { othersRef.current = others; }, [others]);
   const editingId = layer?.id ?? null;
   const lastIdRef = useRef(editingId);
 
@@ -95,12 +93,15 @@ export default function CustomLayerDialog({
     const parked = editingId === null ? undefined : draftsRef.current.get(editingId);
     setTitle(parked?.title ?? layer?.title ?? "");
     setBody(parked?.body ?? layer?.body ?? "");
+  }, [editingId, layer]);
+
+  useEffect(() => {
     setParkedDirty([...draftsRef.current].some(([id, draft]) => {
       if (id === editingId) return false;
-      const saved = othersRef.current.find(candidate => candidate.id === id);
-      return saved !== undefined && (draft.title !== saved.title || draft.body !== saved.body);
+      const saved = others.find(candidate => candidate.id === id);
+      return saved === undefined || draft.title !== saved.title || draft.body !== saved.body;
     }));
-  }, [editingId, layer]);
+  }, [editingId, others]);
   const [discardAction, setDiscardAction] = useState<"close" | "save" | null>(null);
   const titleId = "codex-set-custom-dialog";
 
@@ -238,7 +239,9 @@ export default function CustomLayerDialog({
             role="alertdialog"
             aria-labelledby={titleId + "-discard"}
           >
-            <span id={titleId + "-discard"} className="muted small">{t("codexSet.custom.discardPrompt")}</span>
+            <span id={titleId + "-discard"} className="muted small">
+              {t(discardAction === "save" ? "codexSet.custom.discardOthersAndSave" : "codexSet.custom.discardPrompt")}
+            </span>
             <button type="button" className="btn btn-sm" onClick={() => setDiscardAction(null)}>
               {t("codexSet.custom.keepEditing")}
             </button>
@@ -247,7 +250,7 @@ export default function CustomLayerDialog({
               className="btn btn-danger btn-sm"
               onClick={() => discardAction === "save" ? onSave({ ...draft, body: normalized }) : onClose()}
             >
-              {t("common.discard")}
+              {t(discardAction === "save" ? "common.save" : "common.discard")}
             </button>
           </div>
         ) : (
