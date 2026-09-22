@@ -353,6 +353,8 @@
   "codex-home-wsl.test.ts": "codex-integration",
   "codex-inject-history-wording.test.ts": "codex-integration",
   "codex-inject-integration.test.ts": "codex-integration",
+  "codex-inject-retained-table.test.ts": "codex-integration",
+  "codex-provider-table-retention.test.ts": "codex-integration",
   "codex-inject-write-lock.test.ts": "codex-integration",
   "codex-inject.test.ts": "codex-integration",
   "codex-injected-marker.test.ts": "codex-integration",
@@ -1455,6 +1457,7 @@
   "combo-authoritative-reset.test.ts": "codex-integration",
   "devin-stated-reset-hardening.test.ts": "providers",
   "devin-stated-reset-retry.test.ts": "providers",
+  "ci-scope-reduction.test.ts": "ci-workflows",
   "ci-structure-gate.test.ts": "ci-workflows",
   "responses-code-mode-patch-compile.test.ts": "responses",
   "gui-codex-usage-score-parity.test.ts": "gui",
@@ -1490,5 +1493,8 @@
   "chat-inbound-developer-position.test.ts": "responses",
   "release-pipeline-contract.test.ts": "ci-workflows",
   "desktop-proxy-direct-transport.test.ts": "clients",
-  "platform-dialog-guard.test.ts": "gui"
+  "platform-dialog-guard.test.ts": "gui",
+  "api-key-catalog-authority.test.ts": "providers",
+  "release-resume-identity.test.ts": "ci-workflows",
+  "update-bun-ownership-lease.test.ts": "update"
 }

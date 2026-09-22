@@ -13,6 +13,9 @@ Virtual models are the sole model-identity transition: the ordinary and compact 
 selected public id in diagnostics, rewrite `route.modelId` to the upstream wire id, and atomically
 replace `route.staticPolicy` before adapter or capability decisions continue. Model aliases are
 resolved before the route result is built, so their policy is already keyed by the native wire id.
+Live selector hints obey the [credential-scoped cache contract](catalog.md): a selection change
+cannot reuse the previous credential's roster to choose an alias target. Passive OAuth observation
+neither refreshes credentials nor repairs their storage.
 
 Routed Meta Muse requests use the registry-owned [Muse effort and header contract](providers-and-adapters.md); `max` reaches the provider through the existing reasoning mapper.
 
@@ -133,7 +136,7 @@ does not perform OAuth, and runtime credential resolution rereads the owned sour
 | `src/config/admitted-identity.ts` | Which configuration a derived artifact was built from. Detaches the resident configuration as plain data so one pass cannot gather under one state and project under another, and records the complete structure beside the configuration file's bytes. Refuses an accessor, a cycle, a value JSON could not produce, an unreadable file and a file the loader would have had to salvage; a callable `providers[name].fetch` is the one non-data field, held and compared by reference, while a written one is ordinary data on both sides, as the outbound transport also reads it. It does NOT require the resident configuration to equal the file: the proxy routes by what it holds, and live reconciliation retains live changes and the active listener binding on purpose. Evidence stays in a module WeakMap, never on the config and never in a response. |
 | `src/server/ports.ts` | Owns bind availability and ephemeral-port selection. Temporary probes dispose accepted peers and wait for listener close before reporting success. |
 | `src/cli/status.ts` / `src/cli/status-probes.ts` | Status snapshot assembly and the shared read-only health/stale-process probes used by status and doctor. Probe evidence keeps recorded-port choice, before/after snapshots and per-call timer cleanup together. |
-| `src/cli/doctor.ts` | Read-only environment diagnostics. Sections print through `console.log`; each is a `collect*` helper above `runDoctor` so it is testable without the command. Only a `FAIL`-level condition records a doctor failure — a degraded-but-working install must not break a green pipeline. `collectDefaultModelExposure` compares Codex's root `model` pin against the exposed set, which it READS rather than recomputes: the running proxy's `/v1/models` when one answers, otherwise the on-disk catalog's `visibility: "list"` slugs. It reports exposed, not exposed, or undeterminable, and never the second when it could not read either surface. |
+| `src/cli/doctor.ts` | Read-only environment diagnostics. Sections print through `console.log`; each is a `collect*` helper above `runDoctor` so it is testable without the command. Only a `FAIL`-level condition records a doctor failure — a degraded-but-working install must not break a green pipeline. `collectDefaultModelExposure` compares Codex's root `model` pin against the exposed set, which it READS rather than recomputes: the running proxy's `/v1/models` through the byte-capped direct-local transport when one answers, otherwise the on-disk catalog's `visibility: "list"` slugs. It reports exposed, not exposed, or undeterminable, and never the second when it could not read either surface. |
 | `src/router.ts` | Provider/model selection before adapter dispatch. Policy execution and ordinary management dry-run share effective-provider capability evidence; unresolved, missing, and disabled providers are excluded before scoring. |
 | `src/providers/api-key-selection-capture.ts` | Pure request-owned snapshot of the configured key entry, reference, and revision. The router and stateful selection module share this leaf with type-only dependencies; `api-key-selection.ts` retains the compatibility export and owns persisted selection changes and route resolution. |
 | `src/types.ts` | Shared config, parsed request, adapter, and event types. |
@@ -238,7 +241,7 @@ through `src/server/index/claude-intercept-lifecycle.ts` (fire-and-forget start,
 the ingress decision, `stop` joined into the listener shutdown) from `src/claude/intercept/runtime.ts`: a loopback HTTP CONNECT proxy (`src/claude/intercept/connect-proxy.ts`)
 and a loopback TLS listener (`src/claude/intercept/listener.ts`) that presents a leaf for
 `api.anthropic.com` signed by a per-install authority (`src/claude/intercept/local-ca.ts`, persisted
-under `<OPENCODEX_HOME>/claude-intercept/` with a 0600 key; never installed into an OS trust store).
+under `<OPENCODEX_HOME>/claude-intercept/` with a 0600 key; never installed into an OS trust store). CA reads and pair publication share a directory-bound SQLite lease; persisted certificates must match their private key and verify as a self-signed CA. Startup retries only lease contention with bounded asynchronous backoff before binding either listener.
 Claude Code reaches the pair through `HTTPS_PROXY` plus `NODE_EXTRA_CA_CERTS` in its settings env
 (`src/claude/intercept/settings.ts`), so no `ANTHROPIC_BASE_URL` rewrite is involved and the client
 still believes it talks to Anthropic. The proxy splices `CONNECT api.anthropic.com:443` onto the TLS
@@ -591,3 +594,7 @@ start holds the same lease through bind plus PID and runtime-address publication
 rollback cannot prove the socket closed, the process retains its lease until exit.
 The registration is never deleted; `ocx service install` releases the marker only after the
 registration succeeds.
+
+Bun updater lease and recovery behavior follows the [update transaction contract](ops/docs-and-release.md#bun-updater-ownership-transaction).
+
+Companion timeline and filtered totals follow the [companion usage contract](companion.md).
