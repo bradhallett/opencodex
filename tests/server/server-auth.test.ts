@@ -1,4 +1,4 @@
-import { waitForNativeMainStartupGate } from "../../src/codex/native-profile-startup";
+import { flushNativeMainStartupReleases, waitForNativeMainStartupGate } from "../../src/codex/native-profile-startup";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { logsFromApiBody } from "../helpers/logs-api";
@@ -22,6 +22,14 @@ import {
   recordCodexUpstreamOutcome,
 } from "../../src/codex/routing";
 import { loadConfig, saveConfig } from "../../src/config";
+import { flushConfigDirHardeningForTests } from "../../src/config/paths";
+import { flushWindowsSecretAclReapsBeforeRemoval } from "../../src/lib/windows-secret-acl";
+import { closeRequestHistoryIndex } from "../../src/routing/history/indexer";
+import { clearHealthHistoryCacheForTests } from "../../src/routing/health";
+import { stopServerListener } from "../../src/server/lifecycle";
+import { spendLedgerOwnerSnapshot } from "../../src/lib/spend-ledger-owner";
+import * as codexRuntime from "../../src/codex/runtime";
+import { deriveStartupHealth } from "../../src/codex/autostart-health";
 import { clearUpstreamHostHealth, getUpstreamHostHealth, recordUpstreamHostFailure, upstreamHostHealthKey } from "../../src/codex/upstream-host-health";
 import { deriveProviderPresets } from "../../src/providers/derive";
 import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/main-account";
@@ -36,6 +44,7 @@ import {
   rootFallbackPayload,
   safeConfigDTO,
   startServer,
+  waitForFailedStartRollback,
 } from "../../src/server";
 import { clearRequestLogsForTests, getRequestLogEntries } from "../../src/server/request-log";
 import { setRelayPlatformForTests } from "../../src/server/responses/passthrough-delivery";
@@ -72,6 +81,38 @@ const originalGlobalWebSocket = globalThis.WebSocket;
 // isolation convention already used by tests/helpers/isolated-codex-home.ts.
 const TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-server-auth-"));
 let isolatedCodexHome: IsolatedCodexHome | null = null;
+let managementCorsFixture: ReturnType<typeof ownManagementCorsServer> | null = null;
+let restoreCorsRuntime: (() => void) | null = null;
+
+/** A runner timeout does not cancel its async body or execute its local finally first. */
+function ownManagementCorsServer(server: ReturnType<typeof startServer>) {
+  const abort = new AbortController();
+  let body: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  return {
+    server,
+    signal: abort.signal,
+    run(work: () => Promise<void>): Promise<void> {
+      abort.signal.throwIfAborted();
+      body = work().catch(error => {
+        if (closing && abort.signal.aborted && error instanceof Error && error.name === "AbortError") return;
+        throw error;
+      });
+      return body;
+    },
+    close(): Promise<void> {
+      return closing ??= (async () => {
+        abort.abort();
+        // Start the actual listener/lifecycle stop while the canceled request settles.
+        // The existing stop helper memoizes this promise for repeated teardown callers.
+        const stopped = Promise.allSettled([stopServerListener(server)]);
+        await Promise.allSettled(body ? [body] : []);
+        const [result] = await stopped;
+        if (result.status === "rejected") throw result.reason;
+      })();
+    },
+  };
+}
 
 function config(hostname?: string): OcxConfig {
   return {
@@ -170,15 +211,20 @@ beforeEach(() => {
   isolatedCodexHome = installIsolatedCodexHome("ocx-server-auth-codex-");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  try {
+    if (managementCorsFixture) {
+      await managementCorsFixture.close();
+      managementCorsFixture = null;
+    }
+  } finally {
+    restoreCorsRuntime?.();
+    restoreCorsRuntime = null;
+  }
   globalThis.fetch = originalGlobalFetch;
   globalThis.WebSocket = originalGlobalWebSocket;
   if (previousApiToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
   else process.env.OPENCODEX_API_AUTH_TOKEN = previousApiToken;
-  if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
-  else process.env.OPENCODEX_HOME = previousOpencodexHome;
-  isolatedCodexHome?.restore();
-  isolatedCodexHome = null;
   clearCodexUpstreamHealth();
   clearThreadAccountMap();
   clearAccountNeedsReauth("pool-a");
@@ -187,6 +233,18 @@ afterEach(() => {
   resetCodexModelEntitlementCacheForTests();
   resetDebugSettingsForTests();
   resetDebugLogBufferForTests();
+  // These producers and the process-wide SQLite index can outlive a stopped listener.
+  // Drain/close them under the fixture home before restoring paths or removing its files.
+  await flushNativeMainStartupReleases();
+  await flushConfigDirHardeningForTests();
+  clearHealthHistoryCacheForTests();
+  closeRequestHistoryIndex();
+  await flushWindowsSecretAclReapsBeforeRemoval(TEST_DIR);
+  if (isolatedCodexHome) await flushWindowsSecretAclReapsBeforeRemoval(isolatedCodexHome.path);
+  if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousOpencodexHome;
+  isolatedCodexHome?.restore();
+  isolatedCodexHome = null;
   if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
 });
 
@@ -1330,30 +1388,82 @@ describe("server local API auth", () => {
     }
   });
 
-  test("management CORS echoes validated loopback Origin and covers delegated codex-auth responses", async () => {
-    if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
-    mkdirSync(TEST_DIR, { recursive: true });
-    process.env.OPENCODEX_HOME = TEST_DIR;
-    saveConfig(config("127.0.0.1"));
-
-    const server = startServer(0);
-    const origin = `http://127.0.0.1:${server.port}`;
-    try {
-      const settings = await fetch(new URL("/api/settings", server.url), {
-        headers: managementHeaders({ origin }),
+  describe("management CORS fixture", () => {
+    beforeEach(async () => {
+      if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
+      mkdirSync(TEST_DIR, { recursive: true });
+      process.env.OPENCODEX_HOME = TEST_DIR;
+      saveConfig({ ...config("127.0.0.1"), clientIntegrations: { codex: false } });
+      // Real config/token ACL preparation belongs to fixture readiness, not the CORS
+      // response deadline. Keep the production startup and the ordinary 5s test limit.
+      // Neither management endpoint exercises native Codex synchronization or the
+      // developer's installed service. Keep those external owners outside this fixture.
+      const runtime = spyOn(codexRuntime, "resolveCodexRuntime").mockReturnValue({
+        runtime: { command: "codex-fixture", version: null, source: "fallback" }, failures: [],
       });
-      expect(settings.status).toBe(200);
-      expect(settings.headers.get("access-control-allow-origin")).toBe(origin);
-      expect(settings.headers.get("vary")).toContain("Origin");
+      restoreCorsRuntime = () => runtime.mockRestore();
+      try {
+        managementCorsFixture = ownManagementCorsServer(startServer(0, {
+          inspectNativeCodexOwnership: ownedServiceHomeInspection("management CORS sandbox"),
+          managementApi: {
+            // /api/settings projects runtime/service diagnostics, but their host probes
+            // are not CORS behavior. Keep admission, routing and response decoration real.
+            getCachedStartupHealth: async () => deriveStartupHealth({
+              routingKind: "native", autostartEnabled: false, serviceInstalled: false,
+              serviceViable: false, serviceEnabled: false, serviceRunning: false,
+              serviceStale: false, serviceConflict: false, serviceSupported: true,
+              shimInstalled: false, shimHealthy: false, platform: process.platform,
+            }),
+          },
+        }));
+      } catch (error) {
+        await waitForFailedStartRollback(error);
+        throw error;
+      }
+    });
 
-      const active = await fetch(new URL("/api/codex-auth/active", server.url), {
-        headers: managementHeaders({ origin }),
+    test("management CORS echoes validated loopback Origin and covers delegated codex-auth responses", async () => {
+      const fixture = managementCorsFixture!;
+      const origin = `http://127.0.0.1:${fixture.server.port}`;
+      await fixture.run(async () => {
+        const settings = await fetch(new URL("/api/settings", fixture.server.url), {
+          headers: managementHeaders({ origin }), signal: fixture.signal,
+        });
+        expect(settings.status).toBe(200);
+        expect(settings.headers.get("access-control-allow-origin")).toBe(origin);
+        expect(settings.headers.get("vary")).toContain("Origin");
+        await settings.text();
+
+        const active = await fetch(new URL("/api/codex-auth/active", fixture.server.url), {
+          headers: managementHeaders({ origin }), signal: fixture.signal,
+        });
+        expect(active.status).toBe(200);
+        expect(active.headers.get("access-control-allow-origin")).toBe(origin);
+        await active.text();
       });
-      expect(active.status).toBe(200);
-      expect(active.headers.get("access-control-allow-origin")).toBe(origin);
-    } finally {
-      await server.stop(true);
-    }
+    });
+
+    test("management CORS fixture cancellation settles its body and releases the real spend lease", async () => {
+      const fixture = managementCorsFixture!;
+      let aborted = false;
+      let settled = false;
+      const entered = Promise.withResolvers<void>();
+      const work = fixture.run(async () => {
+        const response = abortableSseUpstream("data: pending\n\n", fixture.signal, () => { aborted = true; });
+        const reading = response.text();
+        entered.resolve();
+        try { await reading; } finally { settled = true; }
+      });
+      await entered.promise;
+      expect(spendLedgerOwnerSnapshot().ownership).toBe("held");
+      const stopped = fixture.close();
+      expect(fixture.close()).toBe(stopped);
+      await stopped;
+      await work;
+      expect(aborted).toBe(true);
+      expect(settled).toBe(true);
+      expect(spendLedgerOwnerSnapshot().ownership).toBe("unheld");
+    });
   });
 
   test("non-loopback management API allows same-origin GUI requests with API token", async () => {
