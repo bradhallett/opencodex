@@ -195,6 +195,15 @@ marker, which the GUI detects to identify the shell without using IPC.
 
 ## Release packaging and updater
 
+Linux AppImage packaging uses `desktop/scripts/appimage-patchelf.py` to preserve
+the compiled Bun CLI when linuxdeploy sets the executable RPATH. Only the exact
+AppDir sidecar, still byte-identical to the prepared CLI, is exempt; other ELF
+operations use the system patchelf. `desktop/scripts/verify-linux-sidecar.sh`
+extracts the completed AppImage, compares its CLI bytes and runs its version command
+on the hosted runner before any release asset is collected.
+The macOS release combines both prepared CLI architectures with `lipo` into the
+universal external binary Tauri expects, and checks that both slices are present.
+
 The release workflow packages the desktop shell as `OpenCodex-<version>-macos.dmg`,
 `OpenCodex-<version>-windows-x64.msi`, `OpenCodex-<version>-linux-x86_64.AppImage`, and
 `OpenCodex-<version>-linux-amd64.deb`. Each artifact is collected with a `.sha256` file;
@@ -205,6 +214,9 @@ packaging matrices, verifies every checksum and every updater signature, and wri
 platforms to have updater signatures. Publication waits for that verification, and the
 attachment job uploads the verified bundle only after the verification receipt names
 the same version and commit.
+Updater signature verification decodes Tauri’s outer-base64 minisign box, checks the
+`ED` signature over the BLAKE2b-512 digest against the pinned key, and verifies the
+trusted-comment signature. Missing or malformed fields fail before publication.
 On macOS, in-app updates download `OpenCodex-<version>-macos.app.tar.gz`; the DMG is for
 the first installation.
 
@@ -223,22 +235,40 @@ network access.
 
 ## The tray icon opens a usage popup
 
+`app/Sources/NativeTray/` defines the macOS SwiftUI display model and AppKit panel library.
+It accepts a versioned display-only snapshot and emits UI actions; it owns no network client,
+runtime process or application loop. `NativeTrayTests` exercises its decoding and formatting.
+The library is built separately from the WidgetKit extension.
+
 A left click on the tray icon opens a small always-on-top window anchored to the icon, not the
 dashboard. Reading the current numbers is the reason to look at a tray icon at all, and the
-dashboard is still one menu item away. The popup reuses the dashboard session and the same
-management endpoints; it is given no additional IPC capability and no admin token.
+dashboard is still one menu item away. On Windows/Linux the web popup reuses the dashboard
+session and management endpoints, with no additional IPC capability or admin token. The
+macOS native collector uses the shell's existing authenticated client, described below.
 
 Two platform facts shape it. A Linux tray host may deliver no usable click to the application,
 so the same surface is reachable from a menu item there. And before the startup sequence has
 resolved a runtime there is nothing to report, so a click with no proxy falls back to showing
 the main window rather than opening an empty popup.
 
-The popup uses the native translucent surface on macOS and Windows: macOS applies the active HUD
-window material with a 12-point corner radius, and Windows applies Acrylic. Linux remains opaque
-because its compositor owns blur and Tauri's window-effects path does not support it. The
-`VIBRANT_SURFACE` constant in `desktop/src-tauri/src/popup.rs` is the single platform verdict for
-both the transparent native builder and the page's `data-tray-vibrancy="on"` hook, so the page
-cannot make an opaque Linux window transparent by mistake.
+On macOS, `desktop/src-tauri/src/native_tray.rs` links the Swift library into the existing
+Tauri process and borrows the existing status item's button on the main thread. A key-capable
+nonactivating AppKit panel hosts SwiftUI; Apple Liquid Glass (`NSGlassEffectView`) owns its single
+rounded surface on macOS 26+, with native popover material on older systems. A bounded native
+scroll view keeps the header and footer reachable. This restores the keyboard-capable panel
+mechanism used by the former native companion without restoring a second application or runtime owner.
+
+The native collector uses the existing identity-bound `ProxyClient` for GET-only reads and
+projects a versioned display DTO. Credentials and raw configuration never reach Swift. Closing
+aborts the owned task and its bounded request group; generation and runtime-binding checks reject
+late results. Swift callbacks only refresh, close, or navigate the existing dashboard window.
+Native/web/widget filtering, title parity and corrupt-settings preservation follow the [companion usage contract](companion.md).
+
+Windows keeps the Acrylic web popup; Linux remains opaque. The `VIBRANT_SURFACE` constant in
+`desktop/src-tauri/src/popup.rs` connects that native webview builder to its
+`data-tray-vibrancy="on"` hook. The macOS panel does not load that web route or its CSS.
+The web popup constrains its document/root to the viewport and scrolls `.tray-page` inside it,
+so the vibrant body's rounded clipping cannot trap the footer below a long account list.
 
 Transparent Tauri windows on macOS require the `macos-private-api` Cargo feature and
 `app.macOSPrivateApi` in `desktop/src-tauri/tauri.conf.json`. Enabling that API forecloses Mac App
