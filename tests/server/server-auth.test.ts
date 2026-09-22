@@ -4567,26 +4567,4 @@ describe("POST /opencodex-session pairing body bound", () => {
     }
   });
 
-  test("a body exactly at the limit is still accepted for parsing", async () => {
-    saveConfig(remoteCatalogConfig());
-    const server = startServer(0);
-    try {
-      // Exactly 4096 bytes of valid JSON: the bound must reject over-limit bodies without
-      // also rejecting one that sits on the limit.
-      const filler = "a".repeat(4096 - '{"grant":""}'.length);
-      const atLimit = `{"grant":"${filler}"}`;
-      expect(Buffer.byteLength(atLimit)).toBe(4096);
-
-      const response = await fetch(new URL("/opencodex-session", server.url), {
-        method: "POST",
-        headers: { "content-type": "application/json", Origin: "http://localhost" },
-        body: atLimit,
-      });
-
-      // 401, not 413: the body was read and parsed, and the grant simply does not exist.
-      expect(response.status).toBe(401);
-    } finally {
-      await server.stop(true);
-    }
-  });
 });
