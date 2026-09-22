@@ -110,16 +110,29 @@ export const LIVE_FRAME_LOG_ENV = "OCX_LIVE_FRAME_LOG";
 /**
  * Append one JSONL record with owner-only permissions. `appendFileSync`'s `mode` only applies
  * when it creates the file, so an existing permissive log would stay readable by other local
- * users. Open for append, harden the opened descriptor, then write.
+ * users. Open for append, harden the opened descriptor, then write — a failed harden on POSIX
+ * must not leave the record in a file other local users can read.
  */
-function appendOwnerOnly(path: string, line: string): void {
+export function appendOwnerOnly(
+  path: string,
+  line: string,
+  harden: (fd: number) => void = hardenLogDescriptor,
+): void {
   const fd = openSync(path, "a", 0o600);
   try {
-    try { fchmodSync(fd, 0o600); } catch { /* platforms without fchmod keep the create mode */ }
+    harden(fd);
     writeSync(fd, line);
   } finally {
     closeSync(fd);
   }
+}
+
+function hardenLogDescriptor(fd: number): void {
+  if (process.platform === "win32") {
+    try { fchmodSync(fd, 0o600); } catch { /* Windows lacks POSIX fchmod */ }
+    return;
+  }
+  fchmodSync(fd, 0o600);
 }
 
 export function logLiveSidebandFrame(dir: "c2u" | "u2c", data: unknown): void {

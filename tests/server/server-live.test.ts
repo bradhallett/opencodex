@@ -1368,6 +1368,19 @@ test("frame log hardens a pre-existing permissive file", async () => {
   }
 });
 
+// A failed descriptor harden must not leave the record in a permissive file.
+test("a failed frame-log harden appends nothing", async () => {
+  const { appendOwnerOnly } = await import("../../src/server/live");
+  const frameLogPath = join(TEST_DIR, "frames-harden-fail.jsonl");
+  writeFileSync(frameLogPath, "", { mode: 0o644 });
+  expect(() =>
+    appendOwnerOnly(frameLogPath, "{}\n", () => {
+      throw new Error("harden denied");
+    }),
+  ).toThrow("harden denied");
+  expect(readFileSync(frameLogPath, "utf8")).toBe("");
+});
+
 test("frame diagnostics retain only metadata for text, binary, and bounded views", async () => {
   const { logLiveSidebandFrame } = await import("../../src/server/live");
   const previousFrameLog = process.env.OCX_LIVE_FRAME_LOG;
