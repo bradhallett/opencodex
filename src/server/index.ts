@@ -178,7 +178,6 @@ import {
 import { EXTERNAL_CALL_PREFIX, LiveCallBindings } from "./live-call-bindings";
 import { contextEndpoint, contextRelayActivated } from "../codex/context-compat";
 import { fetchAllModels, handleManagementAPI, VERSION, type ManagementApiDeps } from "./management-api";
-import { acceptSystemRestart } from "./management/system-restart";
 import {
   createManagementSessionControl,
   initializeManagementAuthState,
@@ -194,13 +193,9 @@ import {
   createLocalAttestationSecret,
 } from "../lib/local-management-attestation";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
-import {
-  createRuntimePackageTreeIntegrityGuard,
-  type PackageTreeIntegrityGuard,
-} from "../lib/package-tree-integrity";
-import { detectInstall } from "../update/index";
 import { createServeOptions, type ServerIngress } from "./index/serve-options";
 import { createClaudeInterceptLifecycle } from "./index/claude-intercept-lifecycle";
+import { createPackageTreeIntegrityGuardForServer } from "./index/package-tree-guard";
 import { inspectStartupOwnership, resolveInboundBodyLimitWithWarning, setStartupCacheInvalidationWrite, warnAgentTaskRecoveryStartup, warnPlaintextV2AgentMessagesStartup, type StartServerDeps } from "./index/startup-warnings";
 import { acquireSpendLedgerServerLifecycle, recordFailedStartRollback, type SpendLedgerServerLifecycle } from "./index/spend-ledger-lifecycle";
 export { waitForFailedStartRollback } from "./index/spend-ledger-lifecycle";
@@ -537,23 +532,7 @@ function startServerWithSpendLedgerOwner(port: number | undefined, deps: StartSe
   // passes it in, and transitions it after the post-startup sync settles. When
   // no gate is supplied (tests, ad-hoc starts) a fresh pending gate is created.
   const readinessGate = deps.readinessGate ?? createReadinessGate();
-  const acceptPackageTreeRestart = deps.acceptSystemRestart ?? acceptSystemRestart;
-  const packageTreeIntegrity = deps.packageTreeIntegrity
-    ?? createRuntimePackageTreeIntegrityGuard(
-      deps.packageTreeInstaller ?? detectInstall(),
-      deps.observePackageTree,
-      undefined,
-      {
-        ...deps.packageTreeIntegrityOptions,
-        onReplaced: () => {
-          // An out-of-band install replaced the package under this live process. Serve
-          // the 503 for the triggering request, then let the standard drain-and-restart
-          // path bring the new tree up instead of refusing traffic until a manual
-          // restart. acceptSystemRestart is idempotent and supervisor-aware.
-          acceptPackageTreeRestart();
-        },
-      },
-    );
+  const packageTreeIntegrity = createPackageTreeIntegrityGuardForServer(deps);
   // Actual bound port, filled in after Bun.serve binds so /readyz reports the
   // real ephemeral port for startServer(0). /healthz keeps its existing port
   // field (the requested listenPort) byte-for-byte.
