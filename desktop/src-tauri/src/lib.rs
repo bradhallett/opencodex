@@ -117,7 +117,7 @@ impl AppState {
 
     /// Let go of a runtime that has already been drained.
     ///
-    /// Dropping the handle does not signal the process ??the shell plugin installs no `Drop` ??so
+    /// Dropping the handle does not signal the process — the shell plugin installs no `Drop` — so
     /// this releases ownership without reintroducing the `kill()` that D2 removed.
     pub fn release(&self) {
         self.confirmed.store(false, Ordering::Release);
@@ -152,8 +152,8 @@ fn hide_dashboard(app: tauri::AppHandle) {
 /// The page asks for this when it loads rather than relying only on the event stream: the first
 /// states finish in milliseconds and an event emitted before the listener exists is simply gone.
 ///
-/// It always answers with a state. Answering `None` put the one case the page cannot render ??a
-/// shell with no startup state ??behind a value the page silently discards, which is a frozen
+/// It always answers with a state. Answering `None` put the one case the page cannot render — a
+/// shell with no startup state — behind a value the page silently discards, which is a frozen
 /// window with no diagnostic and no way to tell it from a slow start.
 #[tauri::command]
 fn startup_snapshot(app: tauri::AppHandle) -> startup::Progress {

@@ -361,6 +361,9 @@ enum Expiry {
 /// whether it is running, so a retry cannot start a second run alongside the first.
 pub struct Startup {
     live: Mutex<Live>,
+    /// Serialize state publication with its synchronous event dispatch. Always acquired
+    /// before `live`, and never held across an await.
+    reporting: Mutex<()>,
     running: AtomicBool,
     /// Which run the state belongs to.
     ///
@@ -380,6 +383,7 @@ impl Startup {
                 consent: ConsentState::Idle,
                 deadline: Instant::now(),
             }),
+            reporting: Mutex::new(()),
             running: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             registered: Mutex::new(None),
@@ -470,6 +474,11 @@ impl Startup {
     fn publish(&self, progress: &mut Progress, failed_in: Option<Phase>) -> bool {
         let mut live = self.live();
         live.publish(progress, failed_in)
+    }
+
+    fn with_reporting<T>(&self, report: impl FnOnce() -> T) -> T {
+        let _reporting = self.reporting.lock().unwrap_or_else(PoisonError::into_inner);
+        report()
     }
 
     /// Publish a terminal state for a run that did not report one itself.
@@ -578,14 +587,21 @@ pub fn begin(app: &AppHandle) {
             let Some(startup) = guard.try_state::<Startup>() else {
                 return;
             };
-            match startup.expire_run(
-                started,
-                generation,
-                format!(
-                    "the startup sequence did not finish within {} seconds",
-                    DEADLINE.as_secs()
-                ),
-            ) {
+            let expiry = startup.with_reporting(|| {
+                let expiry = startup.expire_run(
+                    started,
+                    generation,
+                    format!(
+                        "the startup sequence did not finish within {} seconds",
+                        DEADLINE.as_secs()
+                    ),
+                );
+                if let Expiry::Fired(progress) = &expiry {
+                    let _ = guard.emit(PHASE_EVENT, progress);
+                }
+                expiry
+            });
+            match expiry {
                 Expiry::Dead => return,
                 Expiry::Blocked => {
                     sleep(POLL).await;
@@ -595,10 +611,7 @@ pub fn begin(app: &AppHandle) {
                     sleep_until(wake).await;
                     continue;
                 }
-                Expiry::Fired(progress) => {
-                    let _ = guard.emit(PHASE_EVENT, progress);
-                    return;
-                }
+                Expiry::Fired(_) => return,
             }
         }
     });
@@ -625,10 +638,11 @@ fn settle(app: &AppHandle, started: Instant, generation: u64, reason: String) {
     let Some(startup) = app.try_state::<Startup>() else {
         return;
     };
-    let Some(progress) = startup.settle(started, generation, reason) else {
-        return;
-    };
-    let _ = app.emit(PHASE_EVENT, progress);
+    startup.with_reporting(|| {
+        if let Some(progress) = startup.settle(started, generation, reason) {
+            let _ = app.emit(PHASE_EVENT, progress);
+        }
+    });
 }
 
 async fn run(app: &AppHandle, started: Instant) {
@@ -1365,9 +1379,13 @@ fn report(app: &AppHandle, started: Instant, phase: Phase, detail: Option<String
 /// snapshot keeps. Returns whether the report was published.
 fn emit(app: &AppHandle, mut progress: Progress, failed_in: Option<Phase>) -> bool {
     if let Some(startup) = app.try_state::<Startup>() {
-        if !startup.publish(&mut progress, failed_in) {
-            return false;
-        }
+        return startup.with_reporting(|| {
+            if !startup.publish(&mut progress, failed_in) {
+                return false;
+            }
+            let _ = app.emit(PHASE_EVENT, progress);
+            true
+        });
     }
     let _ = app.emit(PHASE_EVENT, progress);
     true
@@ -1387,7 +1405,7 @@ mod tests {
     use crate::resolve::Takeover;
     use crate::tray_availability::TrayAvailability;
     use std::sync::atomic::Ordering;
-    use tokio::time::Duration;
+    use tokio::time::{Duration, Instant};
 
     fn supported() -> Takeover {
         Takeover::Supported {
@@ -1650,6 +1668,44 @@ mod tests {
         let mut ready = Progress::new(Phase::Ready, 3);
         assert!(!startup.publish(&mut ready, None));
         assert_eq!(startup.latest().phase, Phase::Failed.id());
+    }
+
+    #[test]
+    fn expiry_waits_for_an_accepted_report_to_be_dispatched() {
+        let startup = Startup::new();
+        startup.generation.store(1, Ordering::SeqCst);
+        startup.set_deadline(Instant::now() - Duration::from_secs(60));
+        let events = std::sync::Mutex::new(Vec::new());
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            startup.with_reporting(|| {
+                let mut progress = Progress::new(Phase::Probing, 1);
+                assert!(startup.publish(&mut progress, None));
+                let startup = &startup;
+                let events = &events;
+                scope.spawn(move || {
+                    // The report was accepted but has not dispatched yet. Expiry cannot
+                    // overtake it, even though the state mutex itself is no longer held.
+                    assert!(matches!(
+                        startup.reporting.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ));
+                    checked_tx.send(()).unwrap();
+                    startup.with_reporting(|| {
+                        match startup.expire_run(Instant::now(), 1, "expired".to_owned()) {
+                            Expiry::Fired(progress) => events.lock().unwrap().push(progress.phase),
+                            _ => panic!("the unblocked expiry must publish failure"),
+                        }
+                    });
+                });
+                checked_rx.recv().unwrap();
+                events.lock().unwrap().push(progress.phase);
+            });
+        });
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![Phase::Probing.id(), Phase::Failed.id()]
+        );
     }
 
     #[test]
