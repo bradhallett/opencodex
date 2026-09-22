@@ -20,21 +20,23 @@ const DIAGNOSTICS_CACHE_TTL_MS = 30_000;
 const MAX_DIAGNOSTIC_VALUE_BYTES = 8 * 1024;
 const MAX_PROJECT_CONFIG_BYTES = 1024 * 1024;
 
-function readBoundedRegularFile(filePath: string): string | null {
+export function readBoundedProjectConfig(filePath: string): string | null {
   let fd: number | undefined;
   try {
-    fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // A candidate can become a FIFO after discovery; opening must not wait for a writer.
+    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_PROJECT_CONFIG_BYTES) return null;
 
-    const buffer = Buffer.allocUnsafe(MAX_PROJECT_CONFIG_BYTES + 1);
+    const buffer = Buffer.allocUnsafe(stat.size + 1);
     let bytesRead = 0;
     while (bytesRead < buffer.length) {
       const count = readSync(fd, buffer, bytesRead, buffer.length - bytesRead, null);
       if (count === 0) break;
       bytesRead += count;
     }
-    if (bytesRead > MAX_PROJECT_CONFIG_BYTES) return null;
+    // Reject concurrent growth or truncation rather than diagnosing a partial document.
+    if (bytesRead !== stat.size) return null;
     return buffer.toString("utf-8", 0, bytesRead);
   } catch {
     return null;
@@ -437,7 +439,7 @@ export function collectProjectCodexConfigWarnings(options: {
 
   const warnings: ProjectCodexConfigWarning[] = [];
   for (const path of discoverProjectCodexConfigPaths({ cwd: options.cwd, codexConfigPath })) {
-    const content = readBoundedRegularFile(path);
+    const content = readBoundedProjectConfig(path);
     if (content !== null) warnings.push(...analyzeProjectCodexConfig(content, path));
   }
   return warnings;
