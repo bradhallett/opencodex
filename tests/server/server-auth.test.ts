@@ -1,4 +1,4 @@
-import { flushNativeMainStartupReleases, waitForNativeMainStartupGate } from "../../src/codex/native-profile-startup";
+import { waitForNativeMainStartupGate } from "../../src/codex/native-profile-startup";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { logsFromApiBody } from "../helpers/logs-api";
@@ -22,14 +22,8 @@ import {
   recordCodexUpstreamOutcome,
 } from "../../src/codex/routing";
 import { loadConfig, saveConfig } from "../../src/config";
-import { flushConfigDirHardeningForTests } from "../../src/config/paths";
-import { flushWindowsSecretAclReapsBeforeRemoval } from "../../src/lib/windows-secret-acl";
-import { closeRequestHistoryIndex } from "../../src/routing/history/indexer";
-import { clearHealthHistoryCacheForTests } from "../../src/routing/health";
-import { stopServerListener } from "../../src/server/lifecycle";
 import { spendLedgerOwnerSnapshot } from "../../src/lib/spend-ledger-owner";
-import * as codexRuntime from "../../src/codex/runtime";
-import { deriveStartupHealth } from "../../src/codex/autostart-health";
+import { settleServerAuthFixture, managementHeaders, startManagementCorsFixture, type ManagementCorsFixture } from "../helpers/server-auth-fixture";
 import { clearUpstreamHostHealth, getUpstreamHostHealth, recordUpstreamHostFailure, upstreamHostHealthKey } from "../../src/codex/upstream-host-health";
 import { deriveProviderPresets } from "../../src/providers/derive";
 import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/main-account";
@@ -44,7 +38,6 @@ import {
   rootFallbackPayload,
   safeConfigDTO,
   startServer,
-  waitForFailedStartRollback,
 } from "../../src/server";
 import { clearRequestLogsForTests, getRequestLogEntries } from "../../src/server/request-log";
 import { setRelayPlatformForTests } from "../../src/server/responses/passthrough-delivery";
@@ -61,8 +54,8 @@ import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../../src/lib/system-restart-
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../../src/lib/local-provider-reload-contract";
 import { GUI_PAIR_CAPABILITY_VERSION } from "../../src/lib/gui-pair-capability";
 import { resetCodexModelEntitlementCacheForTests } from "../../src/codex/model-entitlements";
-import { getDebugLogEntries, resetDebugLogBufferForTests } from "../../src/lib/debug-log-buffer";
-import { resetDebugSettingsForTests, setDebugSettings } from "../../src/lib/debug-settings";
+import { getDebugLogEntries } from "../../src/lib/debug-log-buffer";
+import { setDebugSettings } from "../../src/lib/debug-settings";
 import { watchdogMs } from "../helpers/ci-watchdog";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { deferredResetSseUpstream } from "../helpers/deferred-reset-sse-upstream";
@@ -81,38 +74,7 @@ const originalGlobalWebSocket = globalThis.WebSocket;
 // isolation convention already used by tests/helpers/isolated-codex-home.ts.
 const TEST_DIR = mkdtempSync(join(tmpdir(), "ocx-server-auth-"));
 let isolatedCodexHome: IsolatedCodexHome | null = null;
-let managementCorsFixture: ReturnType<typeof ownManagementCorsServer> | null = null;
-let restoreCorsRuntime: (() => void) | null = null;
-
-/** A runner timeout does not cancel its async body or execute its local finally first. */
-function ownManagementCorsServer(server: ReturnType<typeof startServer>) {
-  const abort = new AbortController();
-  let body: Promise<void> | undefined;
-  let closing: Promise<void> | undefined;
-  return {
-    server,
-    signal: abort.signal,
-    run(work: () => Promise<void>): Promise<void> {
-      abort.signal.throwIfAborted();
-      body = work().catch(error => {
-        if (closing && abort.signal.aborted && error instanceof Error && error.name === "AbortError") return;
-        throw error;
-      });
-      return body;
-    },
-    close(): Promise<void> {
-      return closing ??= (async () => {
-        abort.abort();
-        // Start the actual listener/lifecycle stop while the canceled request settles.
-        // The existing stop helper memoizes this promise for repeated teardown callers.
-        const stopped = Promise.allSettled([stopServerListener(server)]);
-        await Promise.allSettled(body ? [body] : []);
-        const [result] = await stopped;
-        if (result.status === "rejected") throw result.reason;
-      })();
-    },
-  };
-}
+let managementCorsFixture: ManagementCorsFixture | null = null;
 
 function config(hostname?: string): OcxConfig {
   return {
@@ -145,14 +107,6 @@ function remoteCatalogConfig(keyId = "remote-key"): OcxConfig {
 function writeRemoteCatalog(): void {
   if (!isolatedCodexHome) throw new Error("isolated Codex home is not installed");
   writeFileSync(join(isolatedCodexHome.path, "opencodex-catalog.json"), REMOTE_CATALOG_BYTES);
-}
-
-function managementHeaders(initial?: HeadersInit): Headers {
-  const token = configuredAdminToken();
-  if (!token) throw new Error("management token was not initialized");
-  const headers = new Headers(initial);
-  headers.set("x-opencodex-api-key", token);
-  return headers;
 }
 
 const canonicalDirect = {
@@ -212,35 +166,15 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  try {
-    if (managementCorsFixture) {
-      await managementCorsFixture.close();
-      managementCorsFixture = null;
-    }
-  } finally {
-    restoreCorsRuntime?.();
-    restoreCorsRuntime = null;
+  if (managementCorsFixture) {
+    await managementCorsFixture.close();
+    managementCorsFixture = null;
   }
   globalThis.fetch = originalGlobalFetch;
   globalThis.WebSocket = originalGlobalWebSocket;
   if (previousApiToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
   else process.env.OPENCODEX_API_AUTH_TOKEN = previousApiToken;
-  clearCodexUpstreamHealth();
-  clearThreadAccountMap();
-  clearAccountNeedsReauth("pool-a");
-  clearAccountNeedsReauth("pool-b");
-  clearAccountQuota();
-  resetCodexModelEntitlementCacheForTests();
-  resetDebugSettingsForTests();
-  resetDebugLogBufferForTests();
-  // These producers and the process-wide SQLite index can outlive a stopped listener.
-  // Drain/close them under the fixture home before restoring paths or removing its files.
-  await flushNativeMainStartupReleases();
-  await flushConfigDirHardeningForTests();
-  clearHealthHistoryCacheForTests();
-  closeRequestHistoryIndex();
-  await flushWindowsSecretAclReapsBeforeRemoval(TEST_DIR);
-  if (isolatedCodexHome) await flushWindowsSecretAclReapsBeforeRemoval(isolatedCodexHome.path);
+  await settleServerAuthFixture(TEST_DIR, isolatedCodexHome?.path);
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOpencodexHome;
   isolatedCodexHome?.restore();
@@ -1390,36 +1324,7 @@ describe("server local API auth", () => {
 
   describe("management CORS fixture", () => {
     beforeEach(async () => {
-      if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
-      mkdirSync(TEST_DIR, { recursive: true });
-      process.env.OPENCODEX_HOME = TEST_DIR;
-      saveConfig({ ...config("127.0.0.1"), clientIntegrations: { codex: false } });
-      // Real config/token ACL preparation belongs to fixture readiness, not the CORS
-      // response deadline. Keep the production startup and the ordinary 5s test limit.
-      // Neither management endpoint exercises native Codex synchronization or the
-      // developer's installed service. Keep those external owners outside this fixture.
-      const runtime = spyOn(codexRuntime, "resolveCodexRuntime").mockReturnValue({
-        runtime: { command: "codex-fixture", version: null, source: "fallback" }, failures: [],
-      });
-      restoreCorsRuntime = () => runtime.mockRestore();
-      try {
-        managementCorsFixture = ownManagementCorsServer(startServer(0, {
-          inspectNativeCodexOwnership: ownedServiceHomeInspection("management CORS sandbox"),
-          managementApi: {
-            // /api/settings projects runtime/service diagnostics, but their host probes
-            // are not CORS behavior. Keep admission, routing and response decoration real.
-            getCachedStartupHealth: async () => deriveStartupHealth({
-              routingKind: "native", autostartEnabled: false, serviceInstalled: false,
-              serviceViable: false, serviceEnabled: false, serviceRunning: false,
-              serviceStale: false, serviceConflict: false, serviceSupported: true,
-              shimInstalled: false, shimHealthy: false, platform: process.platform,
-            }),
-          },
-        }));
-      } catch (error) {
-        await waitForFailedStartRollback(error);
-        throw error;
-      }
+      managementCorsFixture = await startManagementCorsFixture(TEST_DIR, config("127.0.0.1"));
     });
 
     test("management CORS echoes validated loopback Origin and covers delegated codex-auth responses", async () => {
