@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { buildQoderArgs, buildQoderChildEnv, createQoderAdapter } from "../../src/adapters/qoder/adapter";
@@ -85,14 +85,20 @@ describe("qoder adapter", () => {
     const secretSystem = "private system instructions";
     let spawned = 0;
     let attemptedPath: string | undefined;
+    let collisionContents: string | undefined;
     const adapter = createQoderAdapter(provider(), {
       which: () => "/bin/qoder",
       spawn: () => { spawned++; return fakeChild([]); },
-      writeFile: async path => {
+      writeFile: async (path, data, options) => {
         attemptedPath = String(path);
-        const error = new Error("EEXIST") as NodeJS.ErrnoException;
-        error.code = "EEXIST";
-        throw error;
+        // Create the collision in the adapter's real temporary directory, then
+        // execute its exact write options. Removing flag:wx must fail this test.
+        await writeFile(path, "existing fixture contents", { flag: "wx" });
+        try {
+          await writeFile(path, data, options);
+        } finally {
+          collisionContents = await readFile(path, "utf8");
+        }
       },
     });
     const events: AdapterEvent[] = [];
@@ -111,6 +117,7 @@ describe("qoder adapter", () => {
     });
     expect(events[0]!.type === "error" ? events[0]!.message : "").not.toContain(secretSystem);
     expect(attemptedPath).toBeDefined();
+    expect(collisionContents).toBe("existing fixture contents");
     expect(existsSync(dirname(attemptedPath!))).toBe(false);
   });
 
