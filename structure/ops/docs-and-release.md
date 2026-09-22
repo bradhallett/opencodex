@@ -393,10 +393,18 @@ user-scoped test-run queue with `OCX_TEST_NO_QUEUE=1`: the batches already run s
 dedicated job, and queueing a new batch behind a surviving process from the preceding batch spends
 the process timeout without executing tests. The per-process home isolation and live-home/service
 manager guards remain active because the preload installs them before the lock boundary.
-`tests/preload.ts` awaits config hardening and native-main startup releases, then the sandbox's
+`tests/preload.ts` resolves cleanup dependencies after home/lock admission and before test cases,
+then teardown awaits native-main startup releases and config hardening, followed by the sandbox's
 registered ACL child reaps before removing that root. Its synchronous exit fallback leaves an
 undrained root for ownership-checked stale recovery instead of blocking child cleanup with removal
 retries. `tests/ci-workflows/test-sandbox-cleanup.test.ts` pins that ordering with a delayed reap.
+Case fixtures own their proxy listeners and cancellable asynchronous work independently of the
+test runner's deadline. The key-failover fixture settles both before stopping its upstream mock,
+draining producers and ACL reaps, or restoring/removing either home; its body and teardown share
+one stop promise so a timed-out request cannot retain the previous home's spend-ledger lease.
+The HTTP/key fixture uses the existing test-only icacls runners for deterministic synthetic-home
+preparation; it does not claim real OS ACL coverage. Those runners return to their defaults after
+producer/reap settlement, while dedicated ACL tests and the real SQLite lease remain authoritative.
 A test
 failure, a process timeout and a Bun runtime crash each fail their job on the first occurrence; the
 batch runner still sweeps a crashed or timed-out batch one file per process, but only to attribute a

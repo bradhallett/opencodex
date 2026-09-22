@@ -7,7 +7,8 @@ import { readUsageEntries, resetUsageReadCacheForTests } from "../../src/usage/l
 import { loadConfig, saveConfig } from "../../src/config";
 import { flushConfigDirHardeningForTests } from "../../src/config/paths";
 import { flushNativeMainStartupReleases } from "../../src/codex/native-profile-startup";
-import { flushWindowsSecretAclReapsBeforeRemoval } from "../../src/lib/windows-secret-acl";
+import { flushWindowsSecretAclReapsBeforeRemoval, setAsyncIcaclsRunnerForTests, setIcaclsRunnerForTests } from "../../src/lib/windows-secret-acl";
+import { acquireSpendLedgerOwner } from "../../src/lib/spend-ledger-owner";
 import { clearKeyCooldowns, getKeyCooldownUntil, rotateKeyOn429 } from "../../src/providers/key-failover";
 import { deriveXaiConvId } from "../../src/providers/xai-transport";
 import {
@@ -20,11 +21,12 @@ import {
   clearBridgeSearchReplayCacheForTests,
   rememberBridgeSearchReplay,
 } from "../../src/responses/bridge-search-replay-cache";
-import { startServer } from "../../src/server";
+import { startServer as startProductionServer } from "../../src/server";
 import { handleResponses } from "../../src/server/responses";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { createTestCaseLifecycle } from "../helpers/test-sandbox-cleanup";
 import { managementFetch } from "../helpers/management-auth";
 import { resetProviderRequestPacingForTest, setProviderRequestPacingRuntimeForTest, waitForProviderRequestSlot } from "../../src/providers/request-pacing";
 import { providerApiKeySelectionIsCurrent, resolveCurrentProviderApiKeyTransport } from "../../src/providers/api-key-selection";
@@ -35,8 +37,31 @@ let testDir = "";
 let previousHome: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 let upstream: ReturnType<typeof Bun.serve> | null = null;
+let caseLifecycle = createTestCaseLifecycle();
+
+function runCase(work: (lifecycle: ReturnType<typeof createTestCaseLifecycle>) => Promise<void>) {
+  const lifecycle = caseLifecycle;
+  return lifecycle.run(() => work(lifecycle));
+}
+
+function startServer(...args: Parameters<typeof startProductionServer>) {
+  caseLifecycle.abort.signal.throwIfAborted();
+  const server = startProductionServer(...args);
+  const stop = server.stop.bind(server);
+  Object.defineProperty(server, "stop", {
+    configurable: true,
+    value: caseLifecycle.ownStop(() => stop(true)),
+  });
+  return server;
+}
 
 beforeEach(() => {
+  // These fixtures exercise real listeners, key selection and SQLite ownership, not OS ACLs.
+  // Keep permission ceremony out of the 5s HTTP behavior budget, using the existing test seam.
+  const aclOk = { success: true, exitCode: 0, timedOut: false, stdout: "" };
+  setIcaclsRunnerForTests(() => aclOk);
+  setAsyncIcaclsRunnerForTests(async () => aclOk);
+  caseLifecycle = createTestCaseLifecycle();
   previousHome = process.env.OPENCODEX_HOME;
   isolatedCodexHome = installIsolatedCodexHome("ocx-keyfail-e2e-codex-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-keyfail-e2e-"));
@@ -47,21 +72,30 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await upstream?.stop(true);
-  upstream = null;
-  await flushNativeMainStartupReleases();
-  await flushConfigDirHardeningForTests();
-  // Caller-facing ACL deadlines do not prove that their child released this home.
-  if (testDir) await flushWindowsSecretAclReapsBeforeRemoval(testDir);
-  if (isolatedCodexHome) await flushWindowsSecretAclReapsBeforeRemoval(isolatedCodexHome.path);
-  if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
-  else process.env.OPENCODEX_HOME = previousHome;
-  isolatedCodexHome?.restore();
-  isolatedCodexHome = null;
-  if (testDir) removeTreeWithRetry(testDir);
-  clearKeyCooldowns();
-  clearReasoningReplayCacheForTests();
-  clearBridgeSearchReplayCacheForTests();
+  try {
+    // Bun's test timeout does not cancel the async body. End its requests and release
+    // the actual proxy's spend lease before stopping the upstream or deleting either home.
+    await caseLifecycle.close();
+    resetProviderRequestPacingForTest();
+    await upstream?.stop(true);
+    upstream = null;
+    await flushNativeMainStartupReleases();
+    await flushConfigDirHardeningForTests();
+    // Caller-facing ACL deadlines do not prove that their child released this home.
+    if (testDir) await flushWindowsSecretAclReapsBeforeRemoval(testDir);
+    if (isolatedCodexHome) await flushWindowsSecretAclReapsBeforeRemoval(isolatedCodexHome.path);
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    isolatedCodexHome?.restore();
+    isolatedCodexHome = null;
+    if (testDir) removeTreeWithRetry(testDir);
+    clearKeyCooldowns();
+    clearReasoningReplayCacheForTests();
+    clearBridgeSearchReplayCacheForTests();
+  } finally {
+    setIcaclsRunnerForTests(null);
+    setAsyncIcaclsRunnerForTests(null);
+  }
 });
 
 describe("server 429 key failover (end-to-end)", () => {
@@ -103,7 +137,48 @@ describe("server 429 key failover (end-to-end)", () => {
     expect(providerApiKeySelectionIsCurrent(config, "current", current)).toBe(true);
   });
 
-  test.each(["responses", "chat/completions"])("%s logs only the key selected after pacing", async surface => {
+  test("cancelling a queued proxy request releases the actual spend lease before the next home", async () => {
+    const lifecycle = caseLifecycle;
+    const queued = Promise.withResolvers<void>();
+    setProviderRequestPacingRuntimeForTest({
+      now: () => 0, setTimer(callback) { queued.resolve(); return callback; },
+      clearTimer() {}, enqueueMicrotask: queueMicrotask,
+    });
+    let sends = 0;
+    upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { sends++; return Response.json({}); } });
+    const config = { port: 0, hostname: "127.0.0.1", defaultProvider: "cancelled", providers: { cancelled: {
+      adapter: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1`, allowPrivateNetwork: true,
+      authMode: "key", apiKey: "synthetic-cancel-key", requestPacing: { enabled: true, minIntervalMs: 100 },
+    } } } as OcxConfig;
+    saveConfig(config);
+    const server = startServer(0);
+    const nextHome = mkdtempSync(join(tmpdir(), "ocx-keyfail-next-"));
+    try {
+      await waitForProviderRequestSlot("cancelled", config.providers.cancelled);
+      const pending = lifecycle.run(async () => {
+        try {
+          const response = await fetch(new URL("/v1/responses", server.url), {
+            method: "POST", headers: { "content-type": "application/json" }, signal: lifecycle.abort.signal,
+            body: JSON.stringify({ model: "cancelled/test", stream: false, input: "hello" }),
+          });
+          await response.text();
+        } finally { await server.stop(true); }
+      });
+      await Promise.race([queued.promise, pending.then(() => { throw new Error("request never reached pacing"); })]);
+      expect(() => acquireSpendLedgerOwner(nextHome)).toThrow("different state directory");
+      await lifecycle.close();
+      await pending;
+      const nextLease = acquireSpendLedgerOwner(nextHome);
+      nextLease.release();
+      expect(sends).toBe(0);
+    } finally {
+      await lifecycle.close();
+      await flushWindowsSecretAclReapsBeforeRemoval(nextHome);
+      removeTreeWithRetry(nextHome);
+    }
+  });
+
+  test.each(["responses", "chat/completions"])("%s logs only the key selected after pacing", surface => runCase(async lifecycle => {
     resetUsageReadCacheForTests();
     let now = 0;
     let resumePacing: (() => void) | undefined;
@@ -133,7 +208,7 @@ describe("server 429 key failover (end-to-end)", () => {
     } } } as OcxConfig;
     saveConfig(config);
     const server = startServer(0);
-    const abort = new AbortController();
+    const abort = lifecycle.abort;
     try {
       await waitForProviderRequestSlot("paced", config.providers.paced);
       const pending = fetch(new URL(`/v1/${surface}`, server.url), {
@@ -141,10 +216,12 @@ describe("server 429 key failover (end-to-end)", () => {
         body: JSON.stringify({ model: "paced/test", stream: false,
           ...(surface === "responses" ? { input: "hello" } : { messages: [{ role: "user", content: "hello" }] }) }),
       });
-      await queued.promise;
+      await Promise.race([queued.promise, pending.then(response => {
+        throw new Error(`request settled before its pacing barrier (${response.status})`);
+      })]);
       expect(seen).toHaveLength(0);
       const selected = await managementFetch(new URL("/api/providers/keys/active", server.url), {
-        method: "PUT", headers: { "content-type": "application/json" },
+        method: "PUT", headers: { "content-type": "application/json" }, signal: abort.signal,
         body: JSON.stringify({ name: "paced", id: "second" }),
       });
       expect(selected.status).toBe(200);
@@ -165,7 +242,7 @@ describe("server 429 key failover (end-to-end)", () => {
       await server.stop(true);
       resetProviderRequestPacingForTest();
     }
-  });
+  }));
 
   test.each(["responses", "chat/completions"])("%s carries the configured env-key identity through 429 recovery", async inbound => {
     const seen: string[] = [];
@@ -1202,7 +1279,7 @@ test.each([false, true])("key refetch retains transient recovery metadata (strea
   } finally { await server.stop(true); }
 });
 
-test("a dispatch-time key switch rebuilds the bridged-search restore under the new credential", async () => {
+test("a dispatch-time key switch rebuilds the bridged-search restore under the new credential", () => runCase(async lifecycle => {
   // Regression for the oauthDispatch rebuild order: the Responses adapter restores a replayed
   // web_search_call from the memo keyed by _reasoningReplayScope, so the rebuild must rebind
   // that scope to the refreshed credential BEFORE buildRequest runs. Restoring under the key
@@ -1266,7 +1343,7 @@ test("a dispatch-time key switch rebuilds the bridged-search restore under the n
   );
 
   const server = startServer(0);
-  const abort = new AbortController();
+  const abort = lifecycle.abort;
   try {
     await waitForProviderRequestSlot("pooled", config.providers.pooled);
     const pending = fetch(new URL("/v1/responses", server.url), {
@@ -1282,9 +1359,11 @@ test("a dispatch-time key switch rebuilds the bridged-search restore under the n
         ],
       }),
     });
-    await queued.promise;
+    await Promise.race([queued.promise, pending.then(response => {
+      throw new Error(`request settled before its pacing barrier (${response.status})`);
+    })]);
     const selected = await managementFetch(new URL("/api/providers/keys/active", server.url), {
-      method: "PUT", headers: { "content-type": "application/json" },
+      method: "PUT", headers: { "content-type": "application/json" }, signal: abort.signal,
       body: JSON.stringify({ name: "pooled", id: "second" }),
     });
     expect(selected.status).toBe(200);
@@ -1304,4 +1383,4 @@ test("a dispatch-time key switch rebuilds the bridged-search restore under the n
     await server.stop(true);
     resetProviderRequestPacingForTest();
   }
-});
+}));

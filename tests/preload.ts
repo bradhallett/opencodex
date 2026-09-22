@@ -123,12 +123,14 @@ if (process.platform === "win32" && lockPath && runLock.owner) {
 const { createTestSandboxCleanup } = await import("./helpers/test-sandbox-cleanup");
 const { flushWindowsSecretAclReapsBeforeRemoval, windowsSecretAclReapPendingAtOrBelow } =
   await import("../src/lib/windows-secret-acl");
+// Resolve cleanup owners during protected setup, not for the first time inside a timed
+// afterAll hook. Cleanup must drain existing producers rather than initialize their graph.
+const { flushConfigDirHardeningForTests } = await import("../src/config/paths");
+const { flushNativeMainStartupReleases } = await import("../src/codex/native-profile-startup");
 const cleanup = createTestSandboxCleanup({
   drainProducers: async () => {
-    const { flushConfigDirHardeningForTests } = await import("../src/config/paths");
-    const { flushNativeMainStartupReleases } = await import("../src/codex/native-profile-startup");
-    await flushConfigDirHardeningForTests();
     await flushNativeMainStartupReleases();
+    await flushConfigDirHardeningForTests();
   },
   waitForReaps: () => flushWindowsSecretAclReapsBeforeRemoval(isolated.root),
   hasPendingReaps: () => windowsSecretAclReapPendingAtOrBelow(isolated.root),
