@@ -87,10 +87,14 @@ describe("CodeBuddy capture-only MCP server", () => {
         },
       }]);
 
-      await expect(client.callTool({
+      // Settle the real stdio exchange before asserting: Bun 1.4.0's rejection
+      // matcher stalls this SDK response when it waits on the pending call itself.
+      const unknownError = await client.callTool({
         name: "not-advertised",
         arguments: {},
-      })).rejects.toThrow("unknown isolated tool");
+      }).catch((error: unknown) => error);
+      expect(unknownError).toBeInstanceOf(Error);
+      expect((unknownError as Error).message).toContain("unknown isolated tool");
 
       const abort = new AbortController();
       let settled = false;
