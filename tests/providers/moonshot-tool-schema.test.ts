@@ -395,6 +395,42 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(shared.type).toBe("string");
   });
 
+  test("counts type-inference growth before retaining an inlined target", async () => {
+    const target = {
+      properties: Object.fromEntries(Array.from({ length: 1_000 }, (_, index) => [`p${index}`, { const: "v" }])),
+      description: "",
+    };
+    target.description = "x".repeat(1024 * 1024 - JSON.stringify(target).length - 100);
+    const parameters = await emittedParameters("https://api.kimi.com/coding/v1", {
+      name: "inferred_byte_growth",
+      parameters: { type: "object", $defs: { Big: target }, properties: { value: { $ref: "#/$defs/Big", required: ["p0"] } } },
+    });
+    const value = (parameters!.properties as Record<string, Record<string, unknown>>).value;
+    // Raw target bytes fit, but the inferred types push the copied target over 1 MiB.
+    expect(Object.keys(value)).toEqual(["$ref"]);
+    expect(value.$ref).toBe("#/$defs/Big");
+    const definition = (parameters!.$defs as Record<string, typeof target>).Big;
+    expect(definition.properties.p0).toMatchObject({ const: "v", type: "string" });
+  });
+
+  test("composed-property re-normalization spends the shared catalog byte allowance", async () => {
+    const bigProperties = Object.fromEntries(Array.from({ length: 30_000 }, (_, index) => [`property_${index}`, true]));
+    const tool = (name: string): OcxTool => ({ name, parameters: {
+      type: "object",
+      $defs: { Big: { type: "object", properties: bigProperties }, Base: { type: "object", properties: { child: { $ref: "#/$defs/Big" } } } },
+      properties: { value: { $ref: "#/$defs/Base", properties: { child: { properties: { sibling: { type: "string" } } } } } },
+    } });
+    const request = await adapterFor("https://api.kimi.com/coding/v1").buildRequest(parsedRequest([tool("first"), tool("second")]));
+    const emitted = JSON.parse(request.body).tools;
+    const first = emitted[0].function.parameters.properties.value.properties.child;
+    const second = emitted[1].function.parameters.properties.value.properties.child;
+    expect(first.properties.sibling).toEqual({ type: "string" });
+    expect(first.properties.property_0).toBe(true);
+    expect(Object.keys(second)).toEqual(["$ref"]);
+    expect(second.$ref).toBe("#/$defs/Big");
+    expect(siblingRefPaths(emitted)).toEqual([]);
+  });
+
   test("intersects bounds when both sides define the same property", async () => {
     const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
       name: "shared_property_bounds_tool",
@@ -584,4 +620,3 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(op.type).toBe("string");
   });
 });
-

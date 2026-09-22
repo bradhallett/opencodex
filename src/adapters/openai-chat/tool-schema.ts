@@ -398,6 +398,14 @@ function normalizeMoonshotSchemaNode(
       state.activeRefs.add(ref);
       const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state, depth + 1);
       state.activeRefs.delete(ref);
+      // Type inference and nested normalization can enlarge the raw target we reserved.
+      // Charge that growth before retaining the copy; nested expansions share this allowance.
+      const normalizedBytes = serializedJsonBytesUpTo(
+        resolvedTarget, inlineBytes + state.inlineByteBudget.remaining,
+      );
+      const growthBytes = Math.max(0, normalizedBytes - inlineBytes);
+      if (growthBytes > state.inlineByteBudget.remaining) return { $ref: ref };
+      state.inlineByteBudget.remaining -= growthBytes;
       const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       if (isXaiObjectSchema(resolvedTarget)) {
         for (const [key, value] of Object.entries(resolvedTarget)) merged[key] = value;
