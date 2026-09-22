@@ -398,13 +398,11 @@ then teardown awaits native-main startup releases and config hardening, followed
 registered ACL child reaps before removing that root. Its synchronous exit fallback leaves an
 undrained root for ownership-checked stale recovery instead of blocking child cleanup with removal
 retries. `tests/ci-workflows/test-sandbox-cleanup.test.ts` pins that ordering with a delayed reap.
-Case fixtures own their proxy listeners and cancellable asynchronous work independently of the
-test runner's deadline. The key-failover fixture settles both before stopping its upstream mock,
-draining producers and ACL reaps, or restoring/removing either home; its body and teardown share
-one stop promise so a timed-out request cannot retain the previous home's spend-ledger lease.
-The HTTP/key fixture uses the existing test-only icacls runners for deterministic synthetic-home
-preparation; it does not claim real OS ACL coverage. Those runners return to their defaults after
-producer/reap settlement, while dedicated ACL tests and the real SQLite lease remain authoritative.
+`tests/helpers/test-sandbox-cleanup.ts` also exposes case-scoped lifecycle ownership: cancellation
+starts listener stops while owned asynchronous work settles, and repeated close/stop calls share
+one promise. Expected teardown aborts are observed without hiding ordinary assertion failures.
+Callers settle that lifecycle before draining producers/reaps and restoring or removing a home;
+the helper does not replace fixture-specific cleanup or claim OS ACL coverage for synthetic tests.
 A test
 failure, a process timeout and a Bun runtime crash each fail their job on the first occurrence; the
 batch runner still sweeps a crashed or timed-out batch one file per process, but only to attribute a
