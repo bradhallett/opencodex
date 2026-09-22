@@ -83,6 +83,11 @@ both execution paths.
 
 ## Bounded response ingestion and OrcaRouter login
 
+`readBoundedResponseBody` can report UTF-8 validity independently of replacement decoding.
+At complete EOF, `reportUtf8Validity` returns `utf8Valid`; combined with `fatalUtf8`, valid input
+reports true and malformed input still rejects. Incomplete, oversized or timed-out bodies do not
+provide positive UTF-8 evidence. Existing byte, deadline, cancellation and reader-release limits apply.
+
 `src/lib/bounded-body.ts` owns `readBoundedResponseBytes`: it consumes the original response
 body without cloning or teeing and retains at most the caller's `maxBytes`. An exact-cap body
 requires EOF to succeed; observing an additional byte discards the retained prefix, returns an

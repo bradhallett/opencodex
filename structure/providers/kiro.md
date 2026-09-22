@@ -24,6 +24,10 @@ reserves the private completion tool. Meta Muse 64-character MCP aliases live in
 
 ## Kiro Responses text controls
 
+Fallback HTTP errors in `src/adapters/kiro/stream.ts` use the shared bounded display-safe body
+reader with the originating request's abort signal. Oversized or incomplete bodies contribute no
+classification text; cancellation releases the reader and turn retention without another fallback.
+
 Kiro shares the Responses freeform restoration boundary in
 `src/responses/apply-patch-envelope.ts`: contractual `input` wrappers are unwrapped, while alternate
 field and outer-fence recovery is limited to unambiguous bare `exec` and `apply_patch` bodies.

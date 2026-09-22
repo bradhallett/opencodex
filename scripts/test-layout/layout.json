@@ -892,6 +892,7 @@
     "kiro-retry.test.ts": "providers/kiro",
     "kiro-review-regressions.test.ts": "providers/kiro",
     "kiro-stream.test.ts": "providers/kiro",
+    "kiro-fallback-error-body.test.ts": "providers/kiro",
     "kiro-usage-quota.test.ts": "providers/kiro",
     "kiro-windows-cli-db-path.test.ts": "providers/kiro",
     "kiro-windows-cli-executable-path.test.ts": "providers/kiro",
