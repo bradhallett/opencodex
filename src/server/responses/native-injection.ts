@@ -4,6 +4,12 @@ import { checkOutboundBodySize } from "./outbound-body-guard";
 import type { NativeResponseControl } from "./native-response-control";
 import type { NativeSteeringReplayObserver } from "./native-steering-replay";
 import {
+  UNDECLARED_TOOL_CALL_ERROR_CODE,
+  undeclaredToolCallMessage,
+  undeclaredToolCallNameInResponse,
+} from "../responses-undeclared-tool-guard";
+import type { ProviderExecutedCallType } from "../responses-undeclared-tool-guard";
+import {
   injectionError, injectionFingerprint, injectionId, injectionRecord as record, injectionResults,
   isInjectionRequest, MAX_NATIVE_INJECTIONS, MAX_NATIVE_INJECTION_BYTES, MAX_NATIVE_INJECTION_CALLS,
   NATIVE_INJECTION_ACK_MS, NATIVE_INJECTION_TOOL_MS,
@@ -46,6 +52,10 @@ export class NativeInjectionChannel implements NativeResponseControl {
   private ackTimer?: ReturnType<typeof setTimeout>;
   private idleTimer?: ReturnType<typeof setTimeout>;
   private readonly settings = new Map<string, string>();
+  private declaredToolNames?: ReadonlySet<string>;
+  private declaredBareToolNames: ReadonlySet<string> = new Set();
+  private declaredNamelessCallTypes: ReadonlySet<string> = new Set();
+  private providerExecutedCallTypes: ReadonlySet<ProviderExecutedCallType> = new Set();
   private readonly lane: unknown;
 
   /** Pin the original settings and lane; construction never opens a connection. */
@@ -66,6 +76,14 @@ export class NativeInjectionChannel implements NativeResponseControl {
   get attached(): boolean { return this.everAttached; }
   /** A terminal is not final until submitted results have acknowledgements. */
   get ended(): boolean { return this.finished; }
+
+  /** Mirror the ordinary response guard for native events that bypass its SSE rewrite. */
+  configureToolAuthorization(active: boolean, names: ReadonlySet<string>, bareNames: ReadonlySet<string>, namelessCallTypes: ReadonlySet<string>, providerExecuted: ReadonlySet<ProviderExecutedCallType>): void {
+    this.declaredToolNames = active ? new Set(names) : undefined;
+    this.declaredBareToolNames = active ? new Set(bareNames) : new Set();
+    this.declaredNamelessCallTypes = active ? new Set(namelessCallTypes) : new Set();
+    this.providerExecutedCallTypes = active ? new Set(providerExecuted) : new Set();
+  }
 
   /** Attach once, after routing/auth/admission, retaining no global response-ID lookup. */
   attach(send: (frame: Frame) => void, fail: (error: Error) => void): () => void {
@@ -95,8 +113,19 @@ export class NativeInjectionChannel implements NativeResponseControl {
   private live(): void {
     if (!this.send || this.finished) injectionError("injection_not_supported", "No live native injection transport is available on this route.");
   }
+  private authorize(item: unknown): void {
+    if (!this.declaredToolNames) return;
+    const undeclared = undeclaredToolCallNameInResponse(
+      { output: [item] }, this.declaredToolNames, this.declaredNamelessCallTypes,
+      this.providerExecutedCallTypes, this.declaredBareToolNames,
+    );
+    if (undeclared !== undefined) {
+      injectionError(UNDECLARED_TOOL_CALL_ERROR_CODE, undeclaredToolCallMessage(undeclared));
+    }
+  }
   /** Advertise client-owned function/custom calls and approvals, never hosted execution. */
   private advertise(item: unknown): void {
+    this.authorize(item);
     const requirement = nativeToolRequirement(item);
     if (!requirement) return;
     const old = this.calls.get(requirement.key);
@@ -253,6 +282,7 @@ export class NativeInjectionChannel implements NativeResponseControl {
         this.correlation?.finish(); this.correlation = new CodexWsCorrelation(true, () => false);
       } else if (!this.currentId || this.terminal) throw new Error("Unexpected native injection event outside an active response.");
       this.correlation?.accept({ ...event, stream_id: undefined });
+      if (type === "response.output_item.added") this.authorize(event.item);
       if (type === "response.output_item.done") this.advertise(event.item);
       if (["response.completed", "response.failed", "response.incomplete"].includes(String(type))) {
         if (!this.currentId || response?.id !== this.currentId) throw new Error("Native injection terminal identity mismatch.");
