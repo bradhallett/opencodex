@@ -12,7 +12,7 @@ import { stopServerListener } from "../../src/server/lifecycle";
 import type { OcxConfig } from "../../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
-import { settleServerAuthFixture } from "../helpers/server-auth-fixture";
+import { currentServerFixtureConfig, settleServerAuthFixture } from "../helpers/server-auth-fixture";
 import { ownedServiceHomeInspection } from "../helpers/owned-service-home-inspection";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-package-tree-integrity");
@@ -25,7 +25,7 @@ let closing = false;
 
 async function prepareServer(deps: Parameters<typeof startServer>[1]): Promise<void> {
   // Package integrity uses the real listener and guard, not native client sync.
-  saveConfig({ ...config(), clientIntegrations: { codex: false } });
+  saveConfig(currentServerFixtureConfig({ ...config(), clientIntegrations: { codex: false } }));
   try {
     ownedServer = startServer(0, {
       inspectNativeCodexOwnership: ownedServiceHomeInspection("package integrity sandbox"),
