@@ -8,7 +8,7 @@ import { stopServerListener } from "../../src/server/lifecycle";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "../helpers/isolated-codex-home";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { serverAuthConfig as config } from "../helpers/server-auth-config";
-import { settleServerAuthFixture } from "../helpers/server-auth-fixture";
+import { currentServerFixtureConfig, settleServerAuthFixture } from "../helpers/server-auth-fixture";
 import { ownedServiceHomeInspection } from "../helpers/owned-service-home-inspection";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -23,7 +23,7 @@ beforeEach(async () => {
   process.env.OPENCODEX_HOME = TEST_DIR;
   // Binding a hostname does not exercise native client synchronization. Keep real
   // listener/auth/ACL setup while excluding the host's installed service identity.
-  saveConfig({ ...config("localhost."), clientIntegrations: { codex: false } });
+  saveConfig(currentServerFixtureConfig({ ...config("localhost."), clientIntegrations: { codex: false } }));
   try {
     server = startServer(0, {
       inspectNativeCodexOwnership: ownedServiceHomeInspection("localhost bind sandbox"),

@@ -8,10 +8,12 @@ import { clearCodexUpstreamHealth, clearThreadAccountMap } from "../../src/codex
 import { resetCodexModelEntitlementCacheForTests } from "../../src/codex/model-entitlements";
 import { saveConfig } from "../../src/config";
 import { flushConfigDirHardeningForTests } from "../../src/config/paths";
+import { migrateSubagentModels } from "../../src/config/subagent-models";
 import { configuredAdminToken } from "../../src/lib/admin-secrets";
 import { resetDebugLogBufferForTests } from "../../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests } from "../../src/lib/debug-settings";
 import { flushWindowsSecretAclReapsBeforeRemoval } from "../../src/lib/windows-secret-acl";
+import { projectOpenAiTierMigration } from "../../src/providers/openai-tiers";
 import { clearHealthHistoryCacheForTests } from "../../src/routing/health";
 import { closeRequestHistoryIndex } from "../../src/routing/history/indexer";
 import { startServer, waitForFailedStartRollback } from "../../src/server";
@@ -19,6 +21,15 @@ import { stopServerListener } from "../../src/server/lifecycle";
 import type { OcxConfig } from "../../src/types";
 import { ownedServiceHomeInspection } from "./owned-service-home-inspection";
 import { removeTreeWithRetry } from "./remove-tree";
+
+/** Seed a current installation without replaying unrelated upgrade writes at startup. */
+export function currentServerFixtureConfig(config: OcxConfig): OcxConfig {
+  // Use the production projections, not hand-maintained version flags. The caller
+  // still publishes once through saveConfig with real file/directory ACL hardening.
+  const current = projectOpenAiTierMigration(config).config;
+  migrateSubagentModels(current);
+  return current;
+}
 
 export function managementHeaders(initial?: HeadersInit): Headers {
   const token = configuredAdminToken();
