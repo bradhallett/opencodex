@@ -8,12 +8,12 @@ export function registerReviewLaneTests(readText: (path: string) => Promise<stri
     };
     // These job conditions use boolean operators and lowercase string comparisons.
     // Evaluate the checked-in expressions, rather than a second implementation of them.
-    const enabled = (job: string, event: string, lane: string, scope = "true", packaging = "true") => {
+    const enabled = (job: string, event: string, lane: string, scope = "true", packaging = "true", native = "true") => {
       const condition = ci.jobs[job]!.if ?? "true";
       const evaluate = new Function("github", "needs", `return (${condition});`);
       return evaluate(
         { event_name: event, event: { inputs: { lane } } },
-        { changes: { outputs: { ci: scope, packaging } } },
+        { changes: { outputs: { ci: scope, packaging, native } } },
       );
     };
     for (const [event, lane, windows, control] of [
@@ -32,9 +32,17 @@ export function registerReviewLaneTests(readText: (path: string) => Promise<stri
       expect(enabled("select-windows-runner", event, lane)).toBe(true);
       expect(enabled("platform-windows", event, lane)).toBe(windows);
       expect(enabled("macos-control", event, lane)).toBe(control);
-      for (const job of ["test", "platform-macos", "gates", "storage-policy", "api-usage", "keyring-smoke", "docker-smoke"]) {
+      for (const job of ["test", "gates", "storage-policy", "api-usage", "keyring-smoke", "docker-smoke"]) {
         expect(enabled(job, event, lane)).toBe(true);
         expect(enabled(job, event, lane, "false")).toBe(event !== "pull_request");
+      }
+      for (const job of ["platform-macos", "widget", "desktop-shell"]) {
+        for (const scope of ["true", "false"]) {
+          for (const native of ["true", "false"]) {
+            expect(enabled(job, event, lane, scope, "true", native))
+              .toBe(event !== "pull_request" || (scope === "true" && native === "true"));
+          }
+        }
       }
       expect(enabled("npm-global-smoke", event, lane, "true", "true")).toBe(true);
       expect(enabled("npm-global-smoke", event, lane, "true", "false")).toBe(false);
@@ -98,9 +106,8 @@ export function registerReviewLaneTests(readText: (path: string) => Promise<stri
       }
     }
 
-    // The push trigger stays pinned to the release-relevant lines: release.yml
-    // gates on main and preview, so widening this one would pull an unrelated
-    // branch into that path.
+    // Release requires push-event evidence on main/preview. Dev integration
+    // uses the PR run; dispatch remains available for additional diagnostics.
     const ci = Bun.YAML.parse(await readText(".github/workflows/ci.yml")) as {
       on?: {
         push?: { branches?: string[]; paths?: string[] };
@@ -109,7 +116,7 @@ export function registerReviewLaneTests(readText: (path: string) => Promise<stri
       jobs?: Record<string, Record<string, unknown> | undefined>;
     };
     expect([...(ci.on?.push?.branches ?? [])].sort())
-      .toEqual(["dev", "main", "preview"]);
+      .toEqual(["main", "preview"]);
 
     // The PR trigger must carry NO base-branch filter, and the two triggers
     // differ on purpose. GitHub matches `branches:` against the BASE ref, so
@@ -194,7 +201,9 @@ export function registerReviewLaneTests(readText: (path: string) => Promise<stri
     expect(scopeIndex).toBeGreaterThan(filterIndex);
 
     const scopedCondition = "github.event_name != 'pull_request' || needs.changes.outputs.ci == 'true'";
-    for (const jobName of ["test", "storage-policy", "gates", "platform-macos", "keyring-smoke", "docker-smoke"]) {
+    // The three native jobs use the compound condition checked above and by
+    // ci-scope-reduction.test.ts, not the ci-only condition here.
+    for (const jobName of ["test", "storage-policy", "gates", "keyring-smoke", "docker-smoke"]) {
       const job = ci.jobs?.[jobName] as { needs?: string; if?: string } | undefined;
       expect(`${jobName}:${job?.needs}`).toBe(`${jobName}:changes`);
       expect(`${jobName}:${job?.if}`).toBe(`${jobName}:${scopedCondition}`);
@@ -230,7 +239,7 @@ export function registerReviewLaneTests(readText: (path: string) => Promise<stri
       env: {
         ...process.env, RESULTS: JSON.stringify(value),
         EVENT_NAME: "workflow_dispatch", LANE: "release-gates",
-        CHANGES_CI: "true", CHANGES_PACKAGING: packaging,
+        CHANGES_CI: "true", CHANGES_NATIVE: "true", CHANGES_PACKAGING: packaging,
         CHANGES_DOCS: "false", CHANGES_STRUCTURE: "false",
       },
       timeout: 5_000,
