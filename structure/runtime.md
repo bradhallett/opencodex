@@ -481,9 +481,7 @@ Provider-scoped approval reviewer settings are projected by the [catalog owner](
 
 Renamed fixed-key providers receive [missing reasoning metadata](catalog.md#renamed-destination-reasoning-metadata) during derivation; explicit per-model entries and provider defaults retain precedence.
 
-`src/codex/sync.ts` refreshes the `src/providers/reasoning-metadata.ts` models.dev snapshot for
-supported routed destinations before catalog gathering, so missing and corrupt snapshots bootstrap
-without adding network work to `src/reasoning-effort.ts` request-time ladder reads.
+Catalog sync refreshes supported-provider effort snapshots off the request path under the [catalog contract](catalog.md).
 
 Translated audio/file admission follows the [final-adapter input contract](adapters/registry.md#untranslated-input-media); native raw passthrough remains separate.
 ## Request-local target compatibility
