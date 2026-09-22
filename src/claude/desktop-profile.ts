@@ -88,7 +88,7 @@ function appliedMarkers(source: { appliedFingerprint?: unknown; appliedAt?: unkn
 }
 
 export function sameProfileContent(left: DesktopProfile, right: DesktopProfile): boolean {
-  return JSON.stringify(left.defaults) === JSON.stringify(right.defaults)
+  return DESKTOP_FAMILIES.every(family => left.defaults[family] === right.defaults[family])
     && JSON.stringify(Object.entries(left.assignments).sort(([a], [b]) => a.localeCompare(b)))
       === JSON.stringify(Object.entries(right.assignments).sort(([a], [b]) => a.localeCompare(b)));
 }

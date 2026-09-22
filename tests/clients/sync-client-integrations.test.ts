@@ -411,6 +411,24 @@ describe("Desktop sync rechecks persisted state after discovery", () => {
     expect(persisted.claudeCode?.systemEnv).toBe(false);
   });
 
+  test("sync accepts unchanged defaults with reordered keys during the Desktop write", async () => {
+    const { outcome, persisted } = await runDesktopSyncWithDrift(
+      driftBaseConfig({ desktopProfile: driftProfileA }),
+      config => {
+        const defaults = config.claudeCode!.desktopProfile!.defaults;
+        config.claudeCode!.desktopProfile!.defaults = {
+          haiku: defaults.haiku,
+          sonnet: defaults.sonnet,
+          fable: defaults.fable,
+          opus: defaults.opus,
+        };
+      },
+    );
+    expect(outcome).toEqual({ client: "claude-desktop", ok: true, changed: true });
+    expect(persisted.claudeCode?.desktopProfile?.appliedFingerprint).toBe("0123456789abcdef");
+    expect(persisted.claudeCode?.desktopProfile?.defaults).toEqual(driftProfileA.defaults);
+  });
+
 });
 
 describe("ocx sync refreshes an already-owned MCode integration", () => {

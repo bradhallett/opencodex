@@ -157,7 +157,8 @@ matches the profile that was just written. Presence is compared first, then cont
 writer deleted the profile or the whole `claudeCode` block, or replaced it with a different
 profile, before the marker commit, the write is declined and reported as skipped instead of
 resurrecting the removed profile with a fresh fingerprint. A profile that was absent from the start
-still stores its fingerprint normally.
+still stores its fingerprint normally. Default-family key order does not change the desired content;
+the comparison uses each family's selected route while preserving real selection changes.
 
 These guarantees concern files on disk. Fully quitting and reopening Desktop is required after
 apply, rotation/recovery or restoration; there is no automatic process restart or guarantee that
