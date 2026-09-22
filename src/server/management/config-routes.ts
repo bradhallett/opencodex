@@ -236,16 +236,23 @@ export async function syncEnabledClientIntegrations(
           // The fingerprint belongs to the desired profile the write just used. If another
           // writer saved a different desired profile between the Desktop write and this marker
           // commit, stamping it would claim B is applied while the disk holds A's bytes.
-          const writtenProfile = latest.claudeCode?.desktopProfile ?? emptyDesktopProfile();
+          const writtenProfile = latest.claudeCode?.desktopProfile;
           const marked = mutatePersistedConfig(persisted => {
             const profile = persisted.claudeCode?.desktopProfile;
-            if (profile && !sameProfileContent(profile, writtenProfile)) {
+            // Presence first: a concurrent delete (of the profile or the whole claudeCode
+            // subtree) must not resurrect the written profile under a fresh fingerprint,
+            // and a concurrent insert must not inherit it either. Content is compared only
+            // when both sides carry a profile.
+            if ((profile == null) !== (writtenProfile == null)) {
+              return { changed: false, value: false };
+            }
+            if (profile && writtenProfile && !sameProfileContent(profile, writtenProfile)) {
               return { changed: false, value: false };
             }
             persisted.claudeCode = {
               ...(persisted.claudeCode ?? {}),
               desktopProfile: {
-                ...(profile ?? writtenProfile),
+                ...(profile ?? writtenProfile ?? emptyDesktopProfile()),
                 appliedFingerprint: r.fingerprint,
                 appliedAt: new Date().toISOString(),
               },
