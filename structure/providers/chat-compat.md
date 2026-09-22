@@ -51,18 +51,26 @@ Shared parsing and streaming follow the [request-copy](../transports/byte-accoun
 A gateway that serves a thinking model without a server-side reasoning parser returns the chain
 of thought inside `message.content` as `<think>` / `<thinking>` / `<reasoning>` blocks and sends
 neither `reasoning_content` nor `reasoning_details`. `src/adapters/openai-chat.ts` recovers those
-blocks into reasoning only for models listed in `inlineThinkTagModels`. The option is off by
-default because 66 registry providers share this adapter and a gateway that does parse reasoning
+blocks into reasoning only for models listed in `inlineThinkTagModels`. An explicit operator list,
+including `[]`, replaces matching registry defaults. The option is off by default because registry
+providers share this adapter and a gateway that does parse reasoning
 must keep its visible content byte-exact. Once enabled the splitter still engages only for a
-response that opens with a thinking tag, so an answer that merely mentions one is never rewritten;
+response that opens with a thinking tag (optionally preceded by whitespace), so ordinary prose or
+code fences before a tag leave the entire response untouched. Whitespace before that initial tag
+and after every closing tag remains answer text;
 after it engages it keeps splitting later blocks, because M-series models interleave thinking with
-answer segments. A block left unterminated at end of stream flushes as reasoning rather than being
+answer segments, including same-line interleaving. Once engaged, tags are protocol delimiters even
+inside subsequent code fences or quoted examples: this explicit opt-in does not parse Markdown.
+Gateways producing ambiguous literals should use structured reasoning instead. Iterative draining
+keeps stack depth independent of the number of blocks in an upstream chunk.
+A block left unterminated at end of stream flushes as reasoning rather than being
 dropped. Whitespace between the leading block and the start of the answer is dropped as formatting
 noise; once answer text has been emitted, whitespace after a later closing tag is preserved,
 because a mid-answer block sits inside markdown or code where indentation is meaningful.
 `src/adapters/inline-think-tags.ts` owns the parser and is shared with the Kiro adapter,
-which consumes it in single-block mode. Regression coverage is in
-`tests/adapters/openai/openai-chat-inline-think-tags.test.ts`.
+which consumes it in single-block mode with its existing leading/first-answer normalization.
+Regression coverage is in `tests/adapters/openai/openai-chat-inline-think-tags.test.ts` and
+`tests/adapters/openai/inline-think-boundaries.test.ts`.
 
 Google tool-declaration narrowing is observed by the Google final compiler, not this shared Chat
 compatibility layer. Its endpoint profile and privacy boundary are specified in the
@@ -369,7 +377,10 @@ measurement rather than allocating a serialized copy just to measure it.
 
 > Decision record: [ADR-0067](../decisions/ADR-0067-reasoning-display-parity-hidethinkingsummary.md)
 
-`hideThinkingSummary` (request reasoning summary absent/"none" — the routed catalog default) is
+`hideThinkingSummary` is set for explicit summary "none", or omitted summary without a validated
+active effort. Accepted minimal/low/medium/high/xhigh/max (including ultra normalized to max)
+allow raw visibility when summary is omitted; none and invalid efforts do not. Explicit "auto"
+still permits raw visibility independently of effort. This flag is
 honored by BOTH reasoning paths: anthropic `thinking_delta` AND raw `reasoning_raw_delta`
 (openai-chat `reasoning_content`, kiro tags). Hidden reasoning emits an envelope-only reasoning
 item (`summary: []`, txt-only `ocxr1:` `encrypted_content`, no text deltas) — invisible in the

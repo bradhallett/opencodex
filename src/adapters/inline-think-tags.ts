@@ -45,7 +45,6 @@ export class InlineThinkTagParser {
   private closeTag = "";
 
   private readonly interleaved: boolean;
-  private sawAnswerText = false;
 
   constructor(private readonly budget?: TranslatorBudget, options?: InlineThinkTagOptions) {
     this.interleaved = options?.interleaved === true;
@@ -67,21 +66,24 @@ export class InlineThinkTagParser {
     if (this.state === "streaming") return [{ type: "text_delta", text }];
     if (this.state === "thinking") {
       this.replaceCarry("thinkingBuffer", this.thinkingBuffer + text);
-      return this.drainThinking();
+      return this.drain();
     }
     if (this.state === "scanning") {
       this.replaceCarry("preBuffer", this.preBuffer + text);
-      return this.drainScanning();
+      return this.drain();
     }
     this.replaceCarry("preBuffer", this.preBuffer + text);
     const stripped = this.preBuffer.trimStart();
     const openTag = OPEN_TAGS.find(tag => stripped.startsWith(tag));
     if (openTag) {
+      const leading = this.interleaved ? this.preBuffer.slice(0, this.preBuffer.length - stripped.length) : "";
       this.state = "thinking";
       this.closeTag = closeTagFor(openTag);
       this.replaceCarry("thinkingBuffer", stripped.slice(openTag.length));
       this.replaceCarry("preBuffer", "");
-      return this.drainThinking();
+      const events: AdapterEvent[] = leading ? [{ type: "text_delta", text: leading }] : [];
+      for (const event of this.drain()) events.push(event);
+      return events;
     }
     if (stripped.length <= MAX_OPEN_TAG && isPossibleOpenTagPrefix(stripped)) return [];
     this.state = "streaming";
@@ -114,23 +116,32 @@ export class InlineThinkTagParser {
     this.state = "streaming";
   }
 
+  private drain(): AdapterEvent[] {
+    const events: AdapterEvent[] = [];
+    // State transitions consume a complete tag; incomplete carry ends this feed.
+    // Do not recurse for each block in one upstream chunk.
+    for (;;) {
+      const before = this.state;
+      const next = before === "thinking" ? this.drainThinking() : this.drainScanning();
+      for (const event of next) events.push(event);
+      if (this.state === before || this.state === "streaming") return events;
+    }
+  }
+
   private drainThinking(): AdapterEvent[] {
     const close = this.closeTag;
     const idx = this.thinkingBuffer.indexOf(close);
     if (idx >= 0) {
       const thinking = this.thinkingBuffer.slice(0, idx);
       const remainder = this.thinkingBuffer.slice(idx + close.length);
-      // The blank line a model leaves between its leading block and the answer is formatting
-      // noise, so it goes. Once the answer has started, whitespace is the answer's own: a
-      // mid-answer block sits inside markdown or code where indentation is meaningful.
-      const after = this.sawAnswerText ? remainder : remainder.trimStart();
+      // Opt-in Chat answers are byte-preserving; keep Kiro's legacy normalization.
+      const after = this.interleaved ? remainder : remainder.trimStart();
       this.replaceCarry("thinkingBuffer", "");
       const events: AdapterEvent[] = [];
       if (thinking) events.push({ type: "reasoning_raw_delta", text: thinking });
       if (this.interleaved) {
         this.state = "scanning";
         this.replaceCarry("preBuffer", after);
-        events.push(...this.drainScanning());
       } else {
         this.state = "streaming";
         if (after) events.push({ type: "text_delta", text: after });
@@ -152,37 +163,31 @@ export class InlineThinkTagParser {
    */
   private drainScanning(): AdapterEvent[] {
     const events: AdapterEvent[] = [];
-    for (;;) {
-      let openIndex = -1;
-      let openTag: ThinkingTag | undefined;
-      for (const tag of OPEN_TAGS) {
-        const index = this.preBuffer.indexOf(tag);
-        if (index >= 0 && (openIndex < 0 || index < openIndex)) {
-          openIndex = index;
-          openTag = tag;
-        }
+    let openIndex = -1;
+    let openTag: ThinkingTag | undefined;
+    for (const tag of OPEN_TAGS) {
+      const index = this.preBuffer.indexOf(tag);
+      if (index >= 0 && (openIndex < 0 || index < openIndex)) {
+        openIndex = index;
+        openTag = tag;
       }
-      if (openIndex >= 0 && openTag) {
-        const before = this.preBuffer.slice(0, openIndex);
-        if (before) { this.sawAnswerText = true; events.push({ type: "text_delta", text: before }); }
-        this.state = "thinking";
-        this.closeTag = closeTagFor(openTag);
-        this.replaceCarry("thinkingBuffer", this.preBuffer.slice(openIndex + openTag.length));
-        this.replaceCarry("preBuffer", "");
-        events.push(...this.drainThinking());
-        // drainThinking returns to "scanning" only when that block closed inside this chunk.
-        if ((this.state as ParserState) !== "scanning") return events;
-        continue;
-      }
-      // Hold back only as much as a partial open tag could occupy.
-      const cut = surrogateSafeCut(this.preBuffer, this.preBuffer.length - (MAX_OPEN_TAG - 1));
-      if (cut > 0) {
-        this.sawAnswerText = true;
-        events.push({ type: "text_delta", text: this.preBuffer.slice(0, cut) });
-        this.replaceCarry("preBuffer", this.preBuffer.slice(cut));
-      }
+    }
+    if (openIndex >= 0 && openTag) {
+      const before = this.preBuffer.slice(0, openIndex);
+      if (before) events.push({ type: "text_delta", text: before });
+      this.state = "thinking";
+      this.closeTag = closeTagFor(openTag);
+      this.replaceCarry("thinkingBuffer", this.preBuffer.slice(openIndex + openTag.length));
+      this.replaceCarry("preBuffer", "");
       return events;
     }
+    // Hold back only as much as a partial open tag could occupy.
+    const cut = surrogateSafeCut(this.preBuffer, this.preBuffer.length - (MAX_OPEN_TAG - 1));
+    if (cut > 0) {
+      events.push({ type: "text_delta", text: this.preBuffer.slice(0, cut) });
+      this.replaceCarry("preBuffer", this.preBuffer.slice(cut));
+    }
+    return events;
   }
 }
 
@@ -227,7 +232,9 @@ export function splitInlineThinkContent(
   content: string,
 ): AdapterEvent[] {
   const splitter = createInlineThinkContentSplitter(models, modelId, budget);
-  const events = [...splitter.feed(content), ...splitter.flush()];
-  splitter.dispose();
-  return events;
+  try {
+    return [...splitter.feed(content), ...splitter.flush()];
+  } finally {
+    splitter.dispose();
+  }
 }

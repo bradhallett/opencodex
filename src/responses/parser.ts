@@ -542,7 +542,7 @@ export function parseRequest(
     options.reasoning = requestedEffort;
   }
   const summaryMode = data.reasoning?.summary;
-  const reasoningActive = Boolean(requestedEffort && requestedEffort !== "none" && requestedEffort !== "off");
+  const reasoningActive = options.reasoning !== undefined && options.reasoning !== "none";
   if (summaryMode === "none" || (!summaryMode && !reasoningActive)) options.hideThinkingSummary = true;
   if (data.presence_penalty !== undefined) options.presencePenalty = data.presence_penalty;
   if (data.frequency_penalty !== undefined) options.frequencyPenalty = data.frequency_penalty;

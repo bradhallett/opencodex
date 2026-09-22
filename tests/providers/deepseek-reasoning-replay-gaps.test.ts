@@ -151,6 +151,7 @@ describe("issue #950 — tool-call reasoning replay invariant (openai-chat wire)
     expect(assistantIndex).toBeGreaterThanOrEqual(0);
     expect(assistantIndex).toBeLessThan(taskIndex);
     expect(messages[assistantIndex]!["reasoning_content"]).toBe(" ");
+    expect(messages[assistantIndex]!.content).toBe("");
   });
 
   test("GAP A: reasoning item arriving AFTER its function_call is attached to its turn", () => {

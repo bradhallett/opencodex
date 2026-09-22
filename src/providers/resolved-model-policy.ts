@@ -228,8 +228,10 @@ export function resolveModelPolicy(input: ResolveModelPolicyInput): ResolvedMode
     "noVisionModels", "noReasoningModels", "noTemperatureModels", "noTopPModels",
     "noPenaltyModels", "noJsonSchemaModels", "autoToolChoiceOnlyModels",
     "preserveReasoningContentModels", "requiresReasoningPlaceholderModels",
-    "reasoningSplitModels", "inlineThinkTagModels", "reasoningDetailsModels", "thinkingToggleModels", "thinkingBudgetModels",
+    "reasoningSplitModels", "reasoningDetailsModels", "thinkingToggleModels", "thinkingBudgetModels",
   ] as const) putUnion(key, entry?.[key]);
+  // This parser is opt-in: an explicit list, including [], overrides registry defaults.
+  putScalar("inlineThinkTagModels", entry?.inlineThinkTagModels);
   for (const directModel of entry?.directReasoningEffortModels ?? []) {
     const staleBudget = [directModel, ...(entry?.thinkingBudgetModels ?? [])];
     const routedStaleBudget = [...(entry?.thinkingBudgetModels ?? []), directModel];
