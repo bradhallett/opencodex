@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { buildQoderArgs, buildQoderChildEnv, createQoderAdapter } from "../../src/adapters/qoder/adapter";
 import { clearQoderBinaryCache, QODER_CN_PROFILE, QODER_GLOBAL_PROFILE, resolveQoderProfile } from "../../src/adapters/qoder/profiles";
@@ -74,6 +76,42 @@ describe("qoder adapter", () => {
     expect(args.join(" ")).not.toContain(secretDeveloper);
     expect(await readFile(promptPath, "utf8").catch(() => "removed")).toBe("removed");
     expect(await promptFromFile).toBe(`${secretSystem}\n\n${secretDeveloper}`);
+  });
+
+  test("a staging write failure fails closed before spawn and cleans the temp dir", async () => {
+    // The exclusive-create write is the seam a same-name collision or a read-only
+    // temp dir hits. It must not reach spawn, must surface the shared staging code,
+    // must not leak the prompt, and must remove the directory it just made.
+    const secretSystem = "private system instructions";
+    let spawned = 0;
+    let attemptedPath: string | undefined;
+    const adapter = createQoderAdapter(provider(), {
+      which: () => "/bin/qoder",
+      spawn: () => { spawned++; return fakeChild([]); },
+      writeFile: async path => {
+        attemptedPath = String(path);
+        const error = new Error("EEXIST") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      },
+    });
+    const events: AdapterEvent[] = [];
+    await adapter.runTurn!(parsed({
+      context: { systemPrompt: [secretSystem], messages: [{ role: "user", content: "hello", timestamp: 0 }] },
+    }), { headers: new Headers(), translatorBudget: createTestTranslatorBudget() }, event => events.push(event));
+
+    expect(spawned).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "error",
+      status: 500,
+      errorType: "upstream_error",
+      code: "system_prompt_staging_failed",
+      retryable: false,
+    });
+    expect(events[0]!.type === "error" ? events[0]!.message : "").not.toContain(secretSystem);
+    expect(attemptedPath).toBeDefined();
+    expect(existsSync(dirname(attemptedPath!))).toBe(false);
   });
 
   test("keeps Global and CN profiles, executables, destinations, and PAT variables isolated", async () => {
