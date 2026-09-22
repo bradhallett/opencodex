@@ -328,8 +328,37 @@ describe("resolveMatchedPrice", () => {
     expect(resolveMatchedPrice("openrouter", "anthropic-claude-3.5-sonnet")).toBeNull();
   });
 
-  test("16. shipped overlay membership: 128 keys, including canonical Fable 5.1, Opus 5, OpenCode Go and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(128);
+  test("Kimi Coding wires share K3 API reference estimates, not plan billing", () => {
+    const expected = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 };
+    for (const provider of ["kimi", "kimi-code", "kimi-responses"]) {
+      for (const model of ["k3", "k3[1m]", "k3-256k"]) {
+        const price = resolveMatchedPrice(provider, model, undefined, []);
+        expect(price?.cost4).toEqual(expected);
+        expect(price?.source).toBe("expected");
+        expect(price?.status).toBe("verified-derived");
+        expect(price?.sourceRef).toContain("default 5-minute cache-write");
+        expect(price?.sourceRef).toContain("not Code Plan billing/quota");
+      }
+      const usage = { inputTokens: 100, outputTokens: 10 };
+      const input = { provider, model: "kimi-for-coding", usageStatus: "reported" as const, usage };
+      expect(resolveMatchedPrice(provider, input.model, undefined, [])).toBeNull();
+      expect(estimateRequestCost(input, undefined, [])).toBeNull();
+      expect(estimateAttemptCost({ ...input, ordinal: 1 }, undefined, undefined, [])).toBeNull();
+      expect(estimateComboCost([
+        { ...input, model: "k3", ordinal: 1 },
+        { ...input, ordinal: 2 },
+      ], undefined, undefined, [])).toBeNull();
+      const override: ExpectedPriceOverlay = {
+        provider, modelId: input.model, cost4: expected,
+        source: "config:modelCosts", verifiedAt: "user-configured", status: "verified",
+      };
+      expect(resolveMatchedPrice(provider, input.model, undefined, [override])?.source).toBe("user");
+      expect(estimateRequestCost(input, undefined, [override])?.cost.total).toBeGreaterThan(0);
+    }
+  });
+
+  test("16. shipped overlay membership: 129 keys, including canonical Fable 5.1, Opus 5, OpenCode Go and compatibility prices", () => {
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(129);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
@@ -385,7 +414,6 @@ describe("resolveMatchedPrice", () => {
       "kimi/kimi-k2.7-code-highspeed",
       "kimi/kimi-k2.6",
       "kimi/kimi-k2.5",
-      "kimi/kimi-for-coding",
       "moonshot/kimi-k3",
       "moonshot/kimi-k2.7-code",
       "moonshot/kimi-k2.7-code-highspeed",
@@ -398,7 +426,9 @@ describe("resolveMatchedPrice", () => {
       "kimi-code/kimi-k2.7-code-highspeed",
       "kimi-code/kimi-k2.6",
       "kimi-code/kimi-k2.5",
-      "kimi-code/kimi-for-coding",
+      "kimi-responses/k3",
+      "kimi-responses/k3[1m]",
+      "kimi-responses/k3-256k",
       "alibaba-token-plan/qwen3.8-max",
       "alibaba-token-plan-intl/qwen3.8-max",
       // OpenCode Go — served ids with no jawcode bundle row; each reuses the

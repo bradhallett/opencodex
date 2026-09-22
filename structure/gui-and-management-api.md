@@ -622,6 +622,12 @@ eligible. Missing trace evidence is not reconstructed from today's configuration
 model shares use that provider's token total, not the global total. Unknown reserved `policy/`
 selectors are rejected before upstream dispatch; historical rows remain unchanged.
 Expected-price overlays are estimates, not billing reproductions: the Z.AI GLM rows (`zai`, `zhipu-bigmodel`, `zhipu-bigmodel-coding`, `zhipu-bigmodel-responses`) display the published z.ai USD list price on surfaces that actually bill by Coding Plan subscription or CNY-tiered domestic PAYG, and every such row is marked `verified-derived` so the estimate flag reaches the UI.
+Kimi Coding's K3 rows in `src/usage/expected-prices.ts` likewise use API-reference estimates with
+the default 5-minute cache-write rate, not Code Plan billing or quota. The three Coding presets
+have explicit price namespaces. Their retargeted `kimi-for-coding` alias stays unpriced until a
+verified K2.8 price or a user `modelCosts` override exists; the retired K2.7 mapping is not reused.
+Request/attempt/combo estimates remain unknown rather than zero or partial totals. Cost evidence
+and routing retain the configured unknown-price and unknown-cap policies; user prices take precedence.
 
 The management API retains the compact accumulator plus bounded query summaries; it never retains
 normalized per-request rows after a response. File identity changes, shrinkage, same-size metadata

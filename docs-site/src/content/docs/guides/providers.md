@@ -238,6 +238,15 @@ cache hit rates, while requests without a key remain keyless. If an opted-in ups
 field, opencodex does not strip it and retry or mutate saved configuration. Other providers remain
 deny-by-default.
 
+Kimi Coding usage prices for `k3`, `k3[1m]`, and `k3-256k` are **API-reference estimates** across
+`kimi`, `kimi-code`, and `kimi-responses`, using the published default 5-minute cache-write rate.
+They do not reproduce Code Plan billing or quota: K3's 1M variant consumes about twice the quota
+of `k3-256k`. `kimi-for-coding` now points to K2.8 Preview, so its former K2.7 price is no longer
+used; its estimate remains unavailable unless the operator supplies `modelCosts`. Unknown-price
+routing policies and cost caps that exclude unknown estimates can therefore exclude this alias.
+See [Kimi's model configuration](https://www.kimi.com/code/docs/en/kimi-code/models.html) and
+[API pricing](https://platform.kimi.ai/docs/pricing/chat).
+
 A custom `openai-chat` provider can opt in when its upstream documents support for
 `prompt_cache_key`:
 

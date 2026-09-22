@@ -136,6 +136,13 @@ Nous refresh 发生终止性失败后，请运行 `ocx login nous` 重新认证�
 若已 opt-in 的上游拒绝该字段，opencodex 不会删除字段后重试，也不会改动已保存配置；其他
 provider 仍保持 deny-by-default。
 
+`kimi`、`kimi-code` 和 `kimi-responses` 中 `k3`、`k3[1m]`、`k3-256k` 的费用是 **API 参考价格估算**，
+采用已公布的默认 5 分钟缓存写入价格，不代表 Code Plan 的实际账单或额度消耗：K3 的 1M 版本消耗
+约为 `k3-256k` 两倍的额度。`kimi-for-coding` 已切换为 K2.8 Preview，因此不再使用旧 K2.7 价格；
+除非用户配置 `modelCosts`，否则其估算保持未知。要求已知价格的路由策略或拒绝未知估算的费用上限
+可能会排除此别名。参见 [Kimi 模型配置](https://www.kimi.com/code/docs/en/kimi-code/models.html) 和
+[API 价格](https://platform.kimi.ai/docs/pricing/chat)。
+
 你也可以从 [web 仪表盘](/zh-cn/guides/web-dashboard/) 启动 OAuth。
 
 ### 多个 OAuth 账号
