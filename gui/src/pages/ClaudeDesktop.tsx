@@ -8,6 +8,7 @@ import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import { readSessionListCacheEntry, writeSessionListCacheEntry } from "../session-list-cache";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton } from "../components/data-surface";
+import ClaudeFirstPartyBindings from "../components/ClaudeFirstPartyBindings";
 
 const FAMILIES = ["opus", "fable", "sonnet", "haiku"] as const;
 type Family = typeof FAMILIES[number];
@@ -52,6 +53,10 @@ interface DesktopFirstPartyStatus {
   interceptRunning: boolean;
   proxyPort: number;
   caCertPath: string;
+  /** Desktop picker model id → OpenCodex route. Absent on servers that predate bindings. */
+  modelBindings?: Record<string, string>;
+  /** Common Desktop picker ids offered as add-row suggestions. */
+  pickerSuggestions?: string[];
 }
 
 interface DesktopStatus {
@@ -87,6 +92,13 @@ function isDesktopStatus(value: unknown): value is DesktopStatus {
       || typeof fp.applied !== "boolean" || typeof fp.stale !== "boolean"
       || typeof fp.interceptEnabled !== "boolean" || typeof fp.interceptRunning !== "boolean"
       || typeof fp.proxyPort !== "number" || typeof fp.caCertPath !== "string") return false;
+    if (fp.modelBindings !== undefined) {
+      const mb = fp.modelBindings;
+      if (typeof mb !== "object" || mb === null || Array.isArray(mb)
+        || Object.values(mb).some(route => typeof route !== "string")) return false;
+    }
+    if (fp.pickerSuggestions !== undefined
+      && (!Array.isArray(fp.pickerSuggestions) || fp.pickerSuggestions.some(id => typeof id !== "string"))) return false;
   }
   return typeof v.desiredEnabled === "boolean"
     && typeof v.applied === "boolean"
@@ -345,6 +357,20 @@ export default function ClaudeDesktop({
   const selectedMode: DesktopMode = chosenMode ?? effectiveMode;
   const modeDirty = modeKnown && selectedMode !== effectiveMode;
 
+  // Post-PUT mirror: the bindings endpoint returns the full map, so the card renders
+  // it immediately instead of waiting on the 5s status poll. A status payload whose
+  // bindings differ (another writer, or the poll confirming the save) retakes ownership.
+  const statusBindings = status?.firstParty?.modelBindings;
+  const statusBindingsJson = statusBindings ? JSON.stringify(statusBindings) : null;
+  const [bindingsOverride, setBindingsOverride] = useState<Record<string, string> | null>(null);
+  const [seenBindingsJson, setSeenBindingsJson] = useState(statusBindingsJson);
+  if (seenBindingsJson !== statusBindingsJson) {
+    setSeenBindingsJson(statusBindingsJson);
+    setBindingsOverride(null);
+  }
+  const firstPartyBindings = bindingsOverride ?? statusBindings ?? {};
+  const pickerSuggestions = useMemo(() => status?.firstParty?.pickerSuggestions ?? [], [status]);
+
   const moveModel = (route: string, family: Family) => {
     if (!profile || profile.assignments[route]?.family === family) return;
     setProfile(current => {
@@ -574,6 +600,19 @@ export default function ClaudeDesktop({
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
       {loadState.showError && <Notice tone="err">{t("claudeDesktop.loadFail")}</Notice>}
       {statusFailed && status && <Notice tone="err">{t("claudeDesktop.loadFail")}</Notice>}
+
+      {effectiveMode === "first-party" && (
+        <ClaudeFirstPartyBindings
+          apiBase={apiBase}
+          bindings={firstPartyBindings}
+          suggestions={pickerSuggestions}
+          models={data.models}
+          onSaved={next => {
+            setBindingsOverride(next);
+            void statusResource.refresh();
+          }}
+        />
+      )}
 
       <div className="claude-profile-bar">
         <span className={`claude-dirty${dirty ? " active" : ""}`}>{dirty ? t("claudeDesktop.unsaved") : t("claudeDesktop.upToDate")}</span>
