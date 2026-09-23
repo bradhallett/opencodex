@@ -260,7 +260,8 @@ bundler mutation format-local.
 
 Linux AppImage packaging uses `desktop/scripts/appimage-patchelf.py` to preserve
 the compiled Bun CLI when linuxdeploy sets the executable RPATH. Only the exact
-AppDir sidecar, still byte-identical to the prepared CLI, is exempt; other ELF
+AppDir sidecar under the active `CARGO_TARGET_DIR`, still byte-identical to the
+prepared target-matching CLI, is exempt; other ELF
 operations use the system patchelf. `desktop/scripts/verify-linux-sidecar.sh`
 extracts the completed AppImage, compares its CLI bytes and runs its version command
 on the hosted runner before any release asset is collected.

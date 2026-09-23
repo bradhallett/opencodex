@@ -8,6 +8,7 @@ import {
   parseArguments,
   processTreeRssKiB,
   readRuntimeRecord,
+  selectDebExecutable,
 } from "../../desktop/scripts/linux-packaged-e2e";
 import { repoPath } from "../helpers/repo-root";
 
@@ -46,6 +47,13 @@ describe("Linux packaged desktop E2E driver", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("selects the deb desktop host without mistaking the ocx sidecar for the app", () => {
+    expect(selectDebExecutable(["/payload/usr/bin/ocx", "/payload/usr/bin/opencodex-desktop"]))
+      .toBe("/payload/usr/bin/opencodex-desktop");
+    expect(() => selectDebExecutable(["/payload/usr/bin/ocx"]))
+      .toThrow("expected exactly one deb desktop executable");
   });
 
   test("accepts only a complete positive runtime record", () => {
@@ -116,9 +124,12 @@ describe("Linux packaged desktop E2E driver", () => {
     const checkResources = shell?.steps?.find(step => step.name === "Prepare desktop check resources");
     expect(checkResources?.run).toContain("binaries/ocx-");
     expect(checkResources?.run).not.toContain("resources/sidecar/ocx");
+    const preserve = shell?.steps?.find(step => step.name === "Preserve the compiled Linux sidecar");
+    expect(preserve?.run).toContain("chmod +x desktop/scripts/appimage-patchelf.py");
     const appImageBuild = shell?.steps?.find(step => step.name === "Build Linux AppImage");
     const debBuild = shell?.steps?.find(step => step.name === "Build Linux deb");
     expect(appImageBuild?.env?.CARGO_TARGET_DIR).toContain("opencodex-appimage-target");
+    expect(appImageBuild?.env?.PATCHELF).toContain("desktop/scripts/appimage-patchelf.py");
     expect(debBuild?.env?.CARGO_TARGET_DIR).toContain("opencodex-deb-target");
     expect(appImageBuild?.env?.CARGO_TARGET_DIR).not.toBe(debBuild?.env?.CARGO_TARGET_DIR);
     const stage = shell?.steps?.find(step => step.name === "Stage isolated Linux bundles");

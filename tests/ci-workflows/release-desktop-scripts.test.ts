@@ -506,6 +506,13 @@ describe("widget extension signing", () => {
     const verify = steps.find(step => step.name === "Verify the packaged Linux sidecar");
     expect(preserve?.if).toBe("runner.os == 'Linux'");
     expect(preserve?.run).toContain("PATCHELF=$GITHUB_WORKSPACE/desktop/scripts/appimage-patchelf.py");
+    const wrapper = readFileSync(
+      repoPath("desktop", "scripts", "appimage-patchelf.py"),
+      "utf8",
+    );
+    expect(wrapper).toContain('os.environ.get("CARGO_TARGET_DIR"');
+    expect(wrapper).toContain("APPDIR_SIDECAR_TAIL");
+    expect(wrapper).not.toContain('desktop/src-tauri/target" / triple');
     expect(verify?.if).toBe("runner.os == 'Linux'");
     expect(verify?.run).toBe("bash desktop/scripts/verify-linux-sidecar.sh");
     expect(indexOfStep(preserve!.name!)).toBeLessThan(indexOfStep("Build desktop bundles"));

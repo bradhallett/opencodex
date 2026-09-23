@@ -1348,11 +1348,16 @@ jobs:
 
       # Build separately. One format failing must not delete or hide the other
       # format's evidence, and neither verification artifact needs an updater key.
+      - name: Preserve the compiled Linux sidecar
+        if: needs.changes.outputs.desktop == 'true'
+        run: chmod +x desktop/scripts/appimage-patchelf.py
+
       - name: Build Linux AppImage
         if: needs.changes.outputs.desktop == 'true'
         working-directory: desktop
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/opencodex-appimage-target
+          PATCHELF: ${{ github.workspace }}/desktop/scripts/appimage-patchelf.py
         run: bunx tauri build --ci --bundles appimage --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Build Linux deb

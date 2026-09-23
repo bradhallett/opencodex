@@ -47,6 +47,11 @@ interface RuntimeRecord {
   port: number;
 }
 
+interface HealthObservation {
+  status: number;
+  body: Record<string, unknown>;
+}
+
 interface ReservedLoopbackPort {
   port: number;
   release: () => Promise<void>;
@@ -173,7 +178,16 @@ export function extractedExecutable(
 
   command("dpkg-deb", ["--extract", artifact, destination]);
   const candidates = executableFiles(join(destination, "usr", "bin"));
-  return exactlyOne(candidates, "deb executable under usr/bin");
+  return selectDebExecutable(candidates);
+}
+
+export function selectDebExecutable(candidates: string[]): string {
+  // The package contains the desktop host and its `ocx` sidecar. The sidecar is deliberately
+  // executable, but it is not the process whose WebView/window lifecycle this acceptance owns.
+  return exactlyOne(
+    candidates.filter(candidate => basename(candidate) !== "ocx"),
+    "deb desktop executable under usr/bin",
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -291,15 +305,16 @@ function xdotoolWindow(): string | undefined {
   return result.stdout.trim().split(/\r?\n/u).find(Boolean);
 }
 
-async function health(record: RuntimeRecord): Promise<Record<string, unknown> | undefined> {
+async function health(record: RuntimeRecord): Promise<HealthObservation | undefined> {
   try {
     const response = await fetch(`http://127.0.0.1:${record.port}/healthz`, {
       signal: AbortSignal.timeout(1_000),
       cache: "no-store",
     });
-    if (!response.ok) return undefined;
     const body = await response.json();
-    return typeof body === "object" && body !== null ? body as Record<string, unknown> : undefined;
+    return typeof body === "object" && body !== null
+      ? { status: response.status, body: body as Record<string, unknown> }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -401,15 +416,28 @@ async function runFormat(
       configuredPort,
     );
     runtimePid = record.pid;
-    const ready = await waitFor(async () => {
-      const body = await health(record);
-      return body?.service === "opencodex"
-        && body.pid === record.pid
-        && body.port === record.port
-        && body.version === version
-        ? body
-        : undefined;
-    }, READY_DEADLINE_MS);
+    let lastHealth: HealthObservation | undefined;
+    let ready: Record<string, unknown>;
+    try {
+      ready = await waitFor(async () => {
+        const observed = await health(record);
+        if (!observed) return undefined;
+        lastHealth = observed;
+        const body = observed.body;
+        return observed.status >= 200 && observed.status < 300
+          && body.service === "opencodex"
+          && body.pid === record.pid
+          && body.port === record.port
+          && body.version === version
+          ? body
+          : undefined;
+      }, READY_DEADLINE_MS);
+    } catch {
+      const observed = lastHealth
+        ? `status ${lastHealth.status}, body ${JSON.stringify(lastHealth.body)}`
+        : "no readable /healthz response";
+      throw new Error(`packaged runtime health identity did not become ready (${observed})`);
+    }
     const readyMs = Date.now() - started;
     const rssKiB = processTreeRssKiB(appPid);
 
