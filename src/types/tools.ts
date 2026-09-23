@@ -77,6 +77,9 @@ const CODE_MODE_HELPER_TOOL_NAMES = [
   "write_stdin",
   "apply_patch",
   "view_image",
+  "create_goal",
+  "get_goal",
+  "update_goal",
 ] as const;
 
 /**
