@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertRuntimeRecordPort,
   locateArtifacts,
   parseArguments,
   processTreeRssKiB,
@@ -53,6 +54,12 @@ describe("Linux packaged desktop E2E driver", () => {
       const record = join(root, "runtime-port.json");
       writeFileSync(record, JSON.stringify({ pid: 42, port: 10100 }));
       expect(readRuntimeRecord(record)).toEqual({ pid: 42, port: 10100 });
+      expect(assertRuntimeRecordPort({ pid: 42, port: 10100 }, 10100)).toEqual({
+        pid: 42,
+        port: 10100,
+      });
+      expect(() => assertRuntimeRecordPort({ pid: 42, port: 10101 }, 10100))
+        .toThrow("recorded port 10101, expected isolated port 10100");
       for (const invalid of [
         { pid: 0, port: 10100 },
         { pid: 42, port: 0 },

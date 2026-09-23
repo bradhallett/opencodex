@@ -47,6 +47,11 @@ interface RuntimeRecord {
   port: number;
 }
 
+interface ReservedLoopbackPort {
+  port: number;
+  release: () => Promise<void>;
+}
+
 interface FormatReport {
   format: LinuxBundleFormat;
   artifact: string;
@@ -175,8 +180,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function reserveLoopbackPort(): Promise<number> {
-  return await new Promise<number>((resolvePort, reject) => {
+async function reserveLoopbackPort(): Promise<ReservedLoopbackPort> {
+  return await new Promise<ReservedLoopbackPort>((resolvePort, reject) => {
     const server = createServer();
     server.unref();
     server.once("error", reject);
@@ -187,7 +192,17 @@ async function reserveLoopbackPort(): Promise<number> {
         reject(new Error("could not reserve a temporary loopback port"));
         return;
       }
-      server.close(error => error ? reject(error) : resolvePort(address.port));
+      let released = false;
+      resolvePort({
+        port: address.port,
+        release: async () => {
+          if (released) return;
+          released = true;
+          await new Promise<void>((resolveClose, rejectClose) => {
+            server.close(error => error ? rejectClose(error) : resolveClose());
+          });
+        },
+      });
     });
   });
 }
@@ -216,6 +231,15 @@ export function readRuntimeRecord(path: string): RuntimeRecord | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function assertRuntimeRecordPort(record: RuntimeRecord, configuredPort: number): RuntimeRecord {
+  if (record.port !== configuredPort) {
+    throw new Error(
+      `packaged runtime recorded port ${record.port}, expected isolated port ${configuredPort}`,
+    );
+  }
+  return record;
 }
 
 function processAlive(pid: number | undefined): boolean {
@@ -335,9 +359,11 @@ async function runFormat(
   let child: ChildProcess | undefined;
   let runtimePid: number | undefined;
   let configuredPort: number | undefined;
+  let reservedPort: ReservedLoopbackPort | undefined;
   try {
     const executable = extractedExecutable(format, artifact, extracted);
-    configuredPort = await reserveLoopbackPort();
+    reservedPort = await reserveLoopbackPort();
+    configuredPort = reservedPort.port;
     writeFileSync(
       join(opencodexHome, "config.json"),
       `${JSON.stringify({ port: configuredPort }, null, 2)}\n`,
@@ -356,6 +382,10 @@ async function runFormat(
       no_proxy: "127.0.0.1,localhost",
       WEBKIT_DISABLE_COMPOSITING_MODE: "1",
     };
+    // Hold the listener while preparing the isolated home so no unrelated process can claim the
+    // selected port. Release it only at the spawn boundary; the packaged runtime can then bind it.
+    await reservedPort.release();
+    reservedPort = undefined;
     child = spawn(executable, [], {
       cwd: dirname(executable),
       env,
@@ -366,7 +396,10 @@ async function runFormat(
     const appPid = child.pid;
     const windowId = await waitFor(xdotoolWindow, READY_DEADLINE_MS);
     const recordPath = join(opencodexHome, "runtime-port.json");
-    const record = await waitFor(() => readRuntimeRecord(recordPath), READY_DEADLINE_MS);
+    const record = assertRuntimeRecordPort(
+      await waitFor(() => readRuntimeRecord(recordPath), READY_DEADLINE_MS),
+      configuredPort,
+    );
     runtimePid = record.pid;
     const ready = await waitFor(async () => {
       const body = await health(record);
@@ -414,6 +447,7 @@ async function runFormat(
       stderrTail: tail(stderrPath),
     };
   } finally {
+    await reservedPort?.release();
     if (child) await stopGroup(child);
     closeSync(stdout);
     closeSync(stderr);

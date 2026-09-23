@@ -424,6 +424,7 @@ jobs:
           mkdir -p "$bundle_root/appimage" "$bundle_root/deb"
           cp -a "$APPIMAGE_TARGET/$DESKTOP_TARGET/release/bundle/appimage/." "$bundle_root/appimage/"
           cp -a "$DEB_TARGET/$DESKTOP_TARGET/release/bundle/deb/." "$bundle_root/deb/"
+          chmod -R a-w "$bundle_root"
           echo "DESKTOP_BUNDLE_ROOT=$bundle_root" >> "$GITHUB_ENV"
 
       - name: Rename release assets

@@ -457,6 +457,7 @@ describe("the desktop build toolchain carries the bundle-type marker", () => {
     const stage = steps.find(step => step.name === "Stage isolated Linux release bundles");
     expect(stage?.run).toContain("$APPIMAGE_TARGET/$DESKTOP_TARGET/release/bundle/appimage/.");
     expect(stage?.run).toContain("$DEB_TARGET/$DESKTOP_TARGET/release/bundle/deb/.");
+    expect(stage?.run).toContain('chmod -R a-w "$bundle_root"');
     const collect = steps.find(step => step.run?.includes("collect-release-assets.ts"));
     expect(collect?.run).toContain('--bundle-root "$DESKTOP_BUNDLE_ROOT"');
   });

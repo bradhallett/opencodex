@@ -272,6 +272,7 @@ jobs:
             desktop:
               - 'desktop/**'
               - 'gui/**'
+              - 'src/**'
               - 'scripts/build-standalone.ts'
               - 'scripts/standalone-targets.ts'
               - 'package.json'
