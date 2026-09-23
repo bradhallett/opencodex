@@ -139,6 +139,35 @@ Claude Desktop은 서로 배타적인 두 모드 중 하나로 OpenCodex를 사�
 거부해요. 전환 후에는 Desktop을 완전히 종료하고 다시 열어 주세요. 자세한 내용과 Claude Code CLI
 호환성은 영어 문서를 참고하세요.
 
+### Code 탭에서 opencodex 모델 쓰기 (1P 바인딩)
+
+1P 모드에서 Code 탭의 모델 선택기는 claude.ai가 채워요. Opus 5.5, Sonnet 5, Haiku 4.5와
+**More models** 아래의 이전 모델은 계정에서 오고, 로컬 설정으로 opencodex 행을 추가할 수는
+없어요. 대신 요청마다 선택기의 Anthropic 모델 ID가 OpenCodex로 들어오므로, 선택기 행을
+opencodex 라우트에 묶어서 씁니다.
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+대시보드의 **Claude → Desktop → Code 탭 모델 바인딩**에서도 같은 작업을 할 수 있어요. 이렇게 묶으면
+Code 탭에서 **Sonnet 4.6**을 고를 때 `xai/grok-4.7`이 응답해요. 선택기에는 Anthropic 이름이
+그대로 보이고, Claude Code 시스템 프롬프트도 모델에게 그 Claude 모델이라고 알려 주므로 평소에
+쓰지 않는 행(**More models** 쪽)을 고르는 편이 좋아요. 바인딩은 다음 요청부터 적용되고 Desktop을
+다시 열 필요는 없어요.
+
+- 라우트는 Desktop 라우트 표기(`provider/model`, 네이티브 OpenAI 풀은 `native/<slug>`)를 쓰고,
+  대시보드에 사용 가능으로 표시된 라우트만 지정할 수 있어요.
+- 날짜가 붙은 ID(`claude-haiku-4-5-20251001`)는 날짜 없는 바인딩(`claude-haiku-4-5`)에 맞고,
+  `[1m]`과 빠른 모드 선택도 같은 바인딩을 따라가요.
+- 바인딩은 `claudeCode.intercept.modelMap`에 저장되고, 로컬 인터셉트 프록시를 거치는 Claude Code
+  트래픽(1P 모드의 Desktop Code 탭과 터미널 `claude` CLI)에만 적용돼요. `ocx claude` 세션과 공개
+  `/v1/messages` 엔드포인트는 바인딩을 무시해요. 전역 `claudeCode.modelMap`은 어디서나 그대로
+  적용되고, 같은 ID라면 바인딩이 우선해요.
+- 적용 중인 바인딩은 `ocx claude desktop status --json`의 `firstParty.modelBindings`에서 확인해요.
+
 ## 원격 허브에 연결된 Claude Desktop
 
 허브에 연결된 컴퓨터에서 `ocx claude desktop apply` 또는 `ocx claude desktop`을 실행하면

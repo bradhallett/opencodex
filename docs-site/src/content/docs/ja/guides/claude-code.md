@@ -118,6 +118,35 @@ Claude Desktop は排他的な 2 つのモードのどちらかで OpenCodex を
 は上書きせず適用を拒否します。切り替え後は Desktop を完全に終了して再起動してください。詳細と
 Claude Code CLI 互換性は英語版ドキュメントを参照してください。
 
+### Code タブで opencodex モデルを使う（1P バインディング）
+
+1P モードでは、Code タブのモデルピッカーは claude.ai が提供します。各行（Opus 5.5、Sonnet 5、
+Haiku 4.5、**More models** 以下の旧モデル）はアカウントから来るもので、ローカル設定で
+opencodex の行を追加することはできません。OpenCodex に届くのは、リクエストごとのピッカーの
+Anthropic モデル ID なので、代わりにピッカーの行を opencodex のルートにバインドします。
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+ダッシュボードの **Claude → Desktop → Code タブのモデルバインディング** からも同じ操作ができます。
+こうすると Code タブで **Sonnet 4.6** を選んだとき `xai/grok-4.7` が応答します。ピッカーには
+Anthropic の名前がそのまま表示され、Claude Code のシステムプロンプトもモデルにその Claude モデルだと
+伝えるため、普段使わない行（**More models** の項目が候補）を選ぶのがおすすめです。バインディングは
+次のリクエストから有効になり、Desktop の再起動は不要です。
+
+- ルートは Desktop のルート表記を使います: `provider/model`、ネイティブ OpenAI プールは
+  `native/<slug>`。ダッシュボードで利用可能と表示されているルートのみ指定できます。
+- 日付付きのピッカー ID（`claude-haiku-4-5-20251001`）は日付なしのバインディング
+  （`claude-haiku-4-5`）にマッチし、`[1m]` とファストモードの選択も同じバインディングに従います。
+- バインディングは `claudeCode.intercept.modelMap` に保存され、ローカルのインターセプトプロキシを
+  通る Claude Code トラフィック（1P モードの Desktop Code タブとターミナルの `claude` CLI）にのみ
+  適用されます。`ocx claude` セッションと公開 `/v1/messages` エンドポイントはこれを無視します。
+  グローバルな `claudeCode.modelMap` は引き続き全体に適用され、同じ ID ではバインディングが優先します。
+- 有効なバインディングは `ocx claude desktop status --json` の `firstParty.modelBindings` で確認できます。
+
 ## リモートハブに接続した Claude Desktop
 
 接続中のマシンで `ocx claude desktop apply` または `ocx claude desktop` を実行すると、

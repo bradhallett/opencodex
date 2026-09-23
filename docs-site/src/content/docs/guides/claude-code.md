@@ -196,6 +196,35 @@ first-party env when the integration is ON and removes it when OFF. Set
 applied and an implicit apply falls back to gateway. On a connected client the proxy runs on the
 hub, so `ocx claude desktop apply` there uses the gateway profile.
 
+### Use opencodex models from the Desktop Code tab (first-party bindings)
+
+In first-party mode the Code tab's model picker belongs to claude.ai: its rows (Opus 5.5,
+Sonnet 5, Haiku 4.5, and the older models under **More models**) come from your account, and no
+local setting can add an opencodex row. What reaches OpenCodex is the picker's Anthropic model id on
+every request, so you bind a picker row to an opencodex route instead:
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+or use **Claude → Desktop → Code tab model bindings** in the dashboard. Picking **Sonnet 4.6** in
+the Code tab is then served by `xai/grok-4.7`. The picker keeps Anthropic's label, and the model is
+still introduced to itself as that Claude model by Claude Code's system prompt, so prefer rows you
+do not otherwise use (the **More models** entries are good candidates). Bindings take effect on the
+next request; Desktop does not need a restart.
+
+- Routes use the Desktop route vocabulary: `provider/model`, or `native/<slug>` for the native
+  OpenAI pool. A route must be one the dashboard lists as available.
+- A dated picker id (`claude-haiku-4-5-20251001`) matches an undated binding (`claude-haiku-4-5`),
+  and `[1m]` and fast-mode selections follow the same binding.
+- Bindings are stored in `claudeCode.intercept.modelMap` and apply only to Claude Code traffic that
+  arrives through the local intercept proxy: Desktop's Code tab and the standalone `claude` CLI in
+  first-party mode. `ocx claude` sessions and the public `/v1/messages` endpoint ignore them; the
+  global `claudeCode.modelMap` still applies everywhere, and a binding wins over it for the same id.
+- `ocx claude desktop status --json` reports the bindings in effect under `firstParty.modelBindings`.
+
 ### Claude Code CLI compatibility
 
 The same `settings.json` env drives the standalone `claude` CLI, so a first-party apply also
@@ -203,8 +232,8 @@ covers terminal sessions, `claude -p`, and subagents without `ocx claude`'s
 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` shell env. Differences from `ocx claude`:
 
 - Model discovery (`/model` → "From gateway") is not available; Claude Code only queries
-  `GET /v1/models` on a configured gateway. Use `modelMap` to route the built-in Anthropic model
-  ids, or type an alias directly.
+  `GET /v1/models` on a configured gateway. Bind a built-in Anthropic model id to a route
+  (`ocx claude desktop bind`, above), use `modelMap`, or type an alias directly.
 - `ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` are chosen by the CLI before the
   request is sent; set them in `settings.json` yourself if a sidecar or subagent should use a
   mapped id.

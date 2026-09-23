@@ -78,6 +78,31 @@ configuration. Ordinary Chat-tab traffic is out of scope for both modes.
 
 `src/claude/desktop-gateway-state.ts` adopts the exact committed Claude subtree and rebases the live hand-edit guard only after persistence succeeds. Pending disjoint live edits survive; later hand edits remain protected during unrelated whole-config saves. Gateway mode and fingerprint are recorded before cleanup and diagnostic awaits.
 
+### First-party model bindings
+
+`src/claude/intercept/model-bindings.ts` owns `claudeCode.intercept.modelMap`. In first-party mode the
+Code tab picker is filled by claude.ai's model selector config, so no local file can add an opencodex
+row; the only lever is the picker's Anthropic id on each request. A binding maps such an id
+(`claude-sonnet-4-6`) to a route in the Desktop route vocabulary (`provider/model` or `native/<slug>`).
+`src/server/index/serve-options.ts` passes `claudeIntercept` to `handleClaudeMessages` and
+`handleClaudeCountTokens` only for the `claude-intercept` ingress; the handlers resolve models against
+`claudeCodeForIngress`, a request-scoped `claudeCode` view whose `modelMap` is the global map with the
+bindings overlaid (binding wins per key, `native/` targets normalized to the bare slug, global values
+left verbatim). The live config object is never copied or persisted with the merged map. Every other
+resolution rule is unchanged, so a bound id is translated rather than natively passed through, dated
+ids reach undated keys, and an `ocx-route` directive still wins. `ocx claude` sessions and the public
+Messages listener never see bindings.
+
+`PUT /api/claude-desktop/first-party-bindings` (`{ set?, remove? }`) validates ids and routes against
+`buildClaudeDesktopState().models` (available routes, native included), commits through
+`mutatePersistedConfig` and adopts the committed `claudeCode` into the live config; `GET
+/api/claude-desktop/status` reports `firstParty.modelBindings` and `firstParty.pickerSuggestions`.
+Surfaces: `ocx claude desktop bind|unbind` (`src/cli/claude-desktop.ts`) and the dashboard card
+`gui/src/components/ClaudeFirstPartyBindings.tsx`. Provider, routing-profile and combo renames rewrite
+binding values alongside `modelMap`; keys are Anthropic ids and are never migrated. Invariant tests:
+`tests/claude-integration/claude-intercept-model-bindings.test.ts` and the intercept-versus-public case
+in `tests/server/claude-intercept-integration.test.ts`.
+
 Production apply and status routes use the asynchronous, read-only policy probe in
 `src/claude/desktop-policy.ts`. Concurrent requests share one in-flight probe, and its
 settled state is cached for 30 seconds. Each registry query is bounded to two seconds;

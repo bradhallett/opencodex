@@ -148,6 +148,39 @@ jamais écrasé et l'application est refusée. Quittez complètement Desktop pui
 changement. Les détails et la compatibilité de la CLI Claude Code sont décrits dans la documentation
 anglaise.
 
+### Utiliser les modèles opencodex depuis l'onglet Code de Desktop (associations first-party)
+
+En mode first-party, le sélecteur de modèles de l'onglet Code appartient à claude.ai : ses lignes
+(Opus 5.5, Sonnet 5, Haiku 4.5 et les anciens modèles sous **More models**) viennent de votre
+compte, et aucun réglage local ne peut y ajouter une ligne opencodex. Ce qui arrive à OpenCodex,
+c'est l'identifiant de modèle Anthropic du sélecteur à chaque requête ; on associe donc une ligne
+du sélecteur à une route opencodex :
+
+```bash
+ocx claude desktop bind claude-sonnet-4-6 xai/grok-4.7
+ocx claude desktop bind claude-opus-4-6 native/gpt-6-sol
+ocx claude desktop unbind claude-opus-4-6
+```
+
+ou utilisez **Claude → Bureau → Associations de modèles de l'onglet Code** dans le tableau de bord.
+Choisir **Sonnet 4.6** dans l'onglet Code est alors servi par `xai/grok-4.7`. Le sélecteur garde le
+nom Anthropic, et le modèle continue d'être présenté comme ce modèle Claude par le prompt système de
+Claude Code ; préférez donc des lignes que vous n'utilisez pas par ailleurs (les entrées
+**More models** sont de bonnes candidates). Les associations s'appliquent dès la requête suivante ;
+Desktop n'a pas besoin d'être relancé.
+
+- Les routes suivent le vocabulaire des routes Desktop : `provider/model`, ou `native/<slug>` pour
+  le pool OpenAI natif. La route doit figurer comme disponible dans le tableau de bord.
+- Un identifiant de sélecteur daté (`claude-haiku-4-5-20251001`) correspond à une association non
+  datée (`claude-haiku-4-5`), et les sélections `[1m]` et du mode rapide suivent la même association.
+- Les associations sont enregistrées dans `claudeCode.intercept.modelMap` et ne s'appliquent qu'au
+  trafic Claude Code qui passe par le proxy d'interception local : l'onglet Code de Desktop et la CLI
+  `claude` autonome en mode first-party. Les sessions `ocx claude` et le point d'entrée public
+  `/v1/messages` les ignorent ; le `claudeCode.modelMap` global continue de s'appliquer partout, et
+  une association l'emporte sur lui pour le même identifiant.
+- `ocx claude desktop status --json` rapporte les associations en vigueur sous
+  `firstParty.modelBindings`.
+
 ## Profil Claude Desktop (mode passerelle)
 
 Claude Desktop utilise un profil distinct de Claude Code. Ouvrez **Claude → Bureau** dans le
