@@ -137,13 +137,13 @@ test("a first-party binding routes a picker id on the intercept only; the public
   saveConfig({
     port: publicPort,
     hostname: "127.0.0.1",
-    defaultProvider: "fake",
+    defaultProvider: "bindtarget",
     providers: {
-      fake: { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${fakeProvider.port}/v1`, allowPrivateNetwork: true, apiKey: "sk-fake", models: ["fake-model"], liveModels: false },
+      bindtarget: { adapter: "openai-chat", baseUrl: `http://127.0.0.1:${fakeProvider.port}/v1`, allowPrivateNetwork: true, apiKey: "sk-fake", models: ["fake-model"], liveModels: false },
     },
     claudeCode: {
       anthropicBaseUrl: `http://127.0.0.1:${fakeAnthropic.port}`,
-      intercept: { port: interceptPort, modelMap: { "claude-sonnet-4-6": "fake/fake-model" } },
+      intercept: { port: interceptPort, modelMap: { "claude-sonnet-4-6": "bindtarget/fake-model" } },
     },
   } as unknown as OcxConfig);
   const server = startServer(publicPort);

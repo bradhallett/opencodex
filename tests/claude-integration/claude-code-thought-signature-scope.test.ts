@@ -14,13 +14,17 @@ import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } fro
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 
 const actualResolver = await import("../../src/server/adapter-resolve");
+// Capture the real function BEFORE mocking: mock.module rewrites the live namespace, so reading
+// actualResolver.resolveAdapter inside the mock would call the mock itself. That recursion froze
+// any later test in the same process that dispatched a real adapter.
+const realResolveAdapter = actualResolver.resolveAdapter;
 
 let adapterFactory: ((provider: OcxProviderConfig) => ProviderAdapter) | undefined;
 
 mock.module("../../src/server/adapter-resolve", () => ({
   ...actualResolver,
   resolveAdapter(provider: OcxProviderConfig, cacheRetention?: "none" | "short" | "long") {
-    return adapterFactory?.(provider) ?? actualResolver.resolveAdapter(provider, cacheRetention);
+    return adapterFactory?.(provider) ?? realResolveAdapter(provider, cacheRetention);
   },
 }));
 
