@@ -11,9 +11,9 @@ export interface FirstPartyBindingModel {
   available: boolean;
 }
 
-/** Labels repeat across providers (the same model through two gateways), so the route disambiguates. */
+/** The page's labels already name the provider ("glm-5.3-flash (zai)"); fall back to the route. */
 function routeOptionLabel(model: FirstPartyBindingModel): string {
-  return model.label && model.label !== model.route ? `${model.label} (${model.route})` : model.route;
+  return model.label || model.route;
 }
 
 /**
