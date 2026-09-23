@@ -14,17 +14,18 @@ import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } fro
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 
 const actualResolver = await import("../../src/server/adapter-resolve");
-// Capture the real function BEFORE mocking: mock.module rewrites the live namespace, so reading
-// actualResolver.resolveAdapter inside the mock would call the mock itself. That recursion froze
-// any later test in the same process that dispatched a real adapter.
-const realResolveAdapter = actualResolver.resolveAdapter;
+// Capture the real function before the override. `mock.module` rewrites the namespace's live
+// binding in place, so a lookup through `actualResolver` inside the wrapper would reach
+// whichever override is current, including this one, once another file in the same process
+// has mocked this module too.
+const actualResolveAdapter = actualResolver.resolveAdapter;
 
 let adapterFactory: ((provider: OcxProviderConfig) => ProviderAdapter) | undefined;
 
 mock.module("../../src/server/adapter-resolve", () => ({
   ...actualResolver,
   resolveAdapter(provider: OcxProviderConfig, cacheRetention?: "none" | "short" | "long") {
-    return adapterFactory?.(provider) ?? realResolveAdapter(provider, cacheRetention);
+    return adapterFactory?.(provider) ?? actualResolveAdapter(provider, cacheRetention);
   },
 }));
 
