@@ -1506,10 +1506,7 @@ export function createServeOptions(ctx: ServeOptionsContext) {
         // pre-translation stream + native passthrough callbacks) — do not re-wrap the
         // translated Anthropic stream here.
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
-          await handleClaudeMessages(
-            req, config, logCtx, { requestId, start, turnAdmissionLease, admission }, policy,
-            { claudeIntercept: ingress === "claude-intercept" },
-          ),
+          await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease, admission }, policy, { claudeIntercept: ingress === "claude-intercept" }),
           req,
           policy,
         ), { requestId, start, logCtx });
