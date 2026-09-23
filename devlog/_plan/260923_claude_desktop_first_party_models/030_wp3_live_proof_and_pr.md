@@ -33,3 +33,20 @@ own proxy, so its ensure step does not rewrite it mid-probe (src/claude/intercep
 - Branch `codex/claude-desktop-first-party-models` → `dev`, repository template (Summary,
   Verification, Checklist), screenshots uploaded to the `pr-assets` branch and linked by commit SHA.
 - Report exact-head CI; do not merge.
+
+## Result (2026-09-23)
+
+- Scratch server from this branch on 10300/10400 (zai only, `claudeCode.desktopMode: first-party`),
+  binding set with the new CLI: `ocx claude desktop bind claude-sonnet-4-6 zai/glm-5.3-flash`.
+  The CLI refused `gpt-6` (not a picker id) and `nope/missing` (route not available).
+- Claude Desktop 1.18286.0, first-party, Code tab, Sonnet 4.6 picked: the reply arrived, and the
+  scratch `usage.jsonl` recorded `zai zai/glm-5.3-flash glm-5.3-flash 200 loopback messages` for it
+  and `anthropic-native claude-haiku-4-5-20251001 200` for Desktop's own title call, so unbound ids
+  still pass through natively. The user's proxy recorded no Messages rows for the probes.
+- The bound model still described itself as Sonnet, because Claude Code's system prompt tells it so.
+  The docs say this and recommend binding rows the operator does not otherwise use.
+- Screenshots on `pr-assets` at 793b39d85d (`260923-claude-desktop-first-party-bindings/`).
+- Restored afterwards: `~/.claude/settings.json` byte-identical to the backup, scratch server stopped
+  and its home deleted, the temporary global `modelMap` used during the probe removed from the
+  user's proxy, Desktop reopened. Desktop was left in first-party mode, which is the saved
+  `desktopMode`; before the probe it was running the gateway profile.
