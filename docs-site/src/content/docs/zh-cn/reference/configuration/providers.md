@@ -80,7 +80,7 @@ selector，而不是分配一个新名称。
 | --- | --- | --- |
 | `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`ollama-native`、`azure-openai`（或别名 `azure`）之一。 |
 | `baseUrl` | `string` | 上游 API 基础 URL。大多数内置固定端点会忽略不匹配的值；具备冲突安全键的预设会保留一个更早、同名的自定义目标。 |
-| `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, maxConcurrentRequests?, models? }` | 可选的客户端出站请求节流，与上游用量、计费和限流指标相互独立。`maxConcurrentRequests` 限制同时进行中的请求数量，计数直到上游响应主体结束；从未读取或取消的主体会在 30 秒后归还配额。提供商限制适用于所有模型，`models` 按上游模型精确 ID 匹配，只能增加延迟或收紧并发上限。排队等待不计入响应头超时。覆盖 HTTP、显式适配器 `fetchResponse` 调用以及 `runTurn` 尝试；配置并发上限后，Responses WebSocket 会切换为 HTTP/SSE 以便归还配额。 |
+| `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, maxConcurrentRequests?, models? }` | 可选的客户端出站请求节流，与上游用量、计费和限流指标相互独立。`maxConcurrentRequests` 限制同时进行中的请求数量，计数直到上游响应主体结束；从未读取或取消的主体会在 30 秒后释放并发槽位。提供商限制适用于所有模型，`models` 按上游模型精确 ID 匹配，只能增加延迟或收紧并发上限。排队等待不计入响应头超时。覆盖 HTTP、显式适配器 `fetchResponse` 调用以及 `runTurn` 尝试；配置并发上限后，Responses WebSocket 会切换为 HTTP/SSE 以便释放并发槽位。 |
 | `responsesPath?` | `string` | 用于 key-auth `openai-responses` 请求的相对资源路径。必须以 `/` 开头，且不能包含 scheme、query 或 fragment。 |
 | `chatCompletionsPath?` | `string` | 用于 `openai-chat` 请求的相对资源路径，是 `responsesPath` 的对应项，适用相同的路径规则。当同一上游以不同前缀提供 Chat Completions 和 Responses 时需要此配置：按模型的 wire override 只更换适配器而不改动 `baseUrl`，否则已启用的 Chat 请求会被发送到 Responses base。随附示例为 Z.AI。 |
 | `upstreamWebsocket?` | `boolean` | 为 `openai-responses` 请求选择性启用上游 Responses WebSocket 传输（默认 `false`）。当上游支持该协议时，流式 POST 请求会使用配置的 Responses 路径（默认 `/v1/responses`），通过 HTTPS 基础 URL 以 WSS 连接，并重新编码为常规流程使用的 SSE。forward 提供者使用 `{baseUrl}/responses`；key-auth 提供者使用 `responsesPath`，未设置时回退到传统的 `/v1/responses`。普通 HTTP 仍使用 SSE；非 Responses 路径和 `openai-chat` 请求仍使用 HTTP。 |
