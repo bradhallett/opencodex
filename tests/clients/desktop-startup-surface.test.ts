@@ -168,6 +168,11 @@ describe("desktop startup surface", () => {
     expect(finish).toContain("window.is_visible()");
     expect(finish).toContain("pub fn open_dashboard(");
     expect(finish).toContain("progress.phase == Phase::Ready.id()");
+    expect(finish).toContain("startup.should_navigate_dashboard()");
+    expect(finish).toContain("crate::window::show(&window)");
+    expect(startup).toContain("fn explicit_dashboard_navigation_is_consumed_once_per_run()");
+    expect(startup).toContain("assert!(startup.should_navigate_dashboard())");
+    expect(startup).toContain("assert!(!startup.should_navigate_dashboard())");
 
     expect(lib).toContain("startup::open_dashboard(&app)");
     expect(lib).toContain("startup::open_dashboard(app)");

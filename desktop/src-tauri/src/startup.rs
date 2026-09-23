@@ -365,6 +365,12 @@ pub struct Startup {
     /// before `live`, and never held across an await.
     reporting: Mutex<()>,
     running: AtomicBool,
+    /// Whether this window has already left the bundled bootstrap surface.
+    ///
+    /// Explicit open actions can arrive repeatedly from the tray, the single-instance hook, and
+    /// the shell command. Navigating on every action would recreate the React application and
+    /// discard renderer state, so the transition is owned here and consumed exactly once per run.
+    dashboard_loaded: AtomicBool,
     /// Which run the state belongs to.
     ///
     /// A run's deadline guard outlives the run it was started for, and a retry that begins before
@@ -385,6 +391,7 @@ impl Startup {
             }),
             reporting: Mutex::new(()),
             running: AtomicBool::new(false),
+            dashboard_loaded: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             registered: Mutex::new(None),
         }
@@ -460,6 +467,11 @@ impl Startup {
         live.consent = ConsentState::Idle;
         live.reported.clear();
         live.latest = Progress::new(Phase::NotStarted, 0);
+        self.dashboard_loaded.store(false, Ordering::Release);
+    }
+
+    fn should_navigate_dashboard(&self) -> bool {
+        !self.dashboard_loaded.swap(true, Ordering::AcqRel)
     }
 
     /// Whether the run has already said how it ended.
@@ -1381,7 +1393,12 @@ fn finish(app: &AppHandle, started: Instant, endpoint: ProxyEndpoint) {
     if let Some(window) = app.get_webview_window("main") {
         let visible = window.is_visible().unwrap_or(true);
         if loads_dashboard_on_ready(LaunchOrigin::detect(), visible) {
-            navigate_dashboard(&window, &dashboard);
+            if app
+                .try_state::<Startup>()
+                .map_or(true, |startup| startup.should_navigate_dashboard())
+            {
+                navigate_dashboard(&window, &dashboard);
+            }
         }
     }
 }
@@ -1399,6 +1416,7 @@ pub fn open_dashboard(app: &AppHandle) {
         (progress.phase == Phase::Ready.id())
             .then_some(progress.dashboard)
             .flatten()
+            .filter(|_| startup.should_navigate_dashboard())
     });
     if let Some(window) = app.get_webview_window("main") {
         if let Some(dashboard) = dashboard {
@@ -1812,6 +1830,17 @@ mod tests {
         assert!(loads_dashboard_on_ready(LaunchOrigin::User, true));
         assert!(loads_dashboard_on_ready(LaunchOrigin::Autostart, true));
         assert!(!loads_dashboard_on_ready(LaunchOrigin::Autostart, false));
+    }
+
+    #[test]
+    fn explicit_dashboard_navigation_is_consumed_once_per_run() {
+        let startup = Startup::new();
+        assert!(startup.should_navigate_dashboard());
+        assert!(!startup.should_navigate_dashboard());
+
+        startup.restart();
+        assert!(startup.should_navigate_dashboard());
+        assert!(!startup.should_navigate_dashboard());
     }
 
     #[test]
