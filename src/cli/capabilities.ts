@@ -807,6 +807,30 @@ export const CAPABILITIES: readonly Capability[] = [
     ],
   },
   {
+    command: ["claude", "desktop", "bind"],
+    summary: "First-party: serve a Claude Desktop Code tab picker model with an opencodex route.",
+    routes: [{ method: "PUT", path: "/api/claude-desktop/first-party-bindings" }],
+    flags: [],
+    mutates: true,
+    json: "none",
+    details: [
+      "Takes a picker model id (claude-sonnet-4-6) and a route in the Desktop route vocabulary (provider/model or native/<slug>); the route must be one the Desktop profile can offer.",
+      "Only Claude Code traffic that reaches the proxy through the first-party intercept (Desktop's Code tab, the claude CLI) honours it; ocx claude and the public Messages endpoint are unaffected.",
+      "The Desktop picker keeps Anthropic's label; the binding changes which model answers, starting with the next request.",
+    ],
+  },
+  {
+    command: ["claude", "desktop", "unbind"],
+    summary: "Remove a first-party Claude Desktop Code tab picker binding.",
+    routes: [{ method: "PUT", path: "/api/claude-desktop/first-party-bindings" }],
+    flags: [],
+    mutates: true,
+    json: "none",
+    details: [
+      "Removing an id that is not bound is a no-op; the remaining bindings are printed.",
+    ],
+  },
+  {
     command: ["integration", "native"],
     summary: "Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations, and read the Cursor status (which builds are installed, gateway values, last request seen).",
     routes: [

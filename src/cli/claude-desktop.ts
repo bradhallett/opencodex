@@ -23,6 +23,7 @@ import {
   isClaudeDesktopMode,
   recordClaudeDesktopMode,
   removeDesktopFirstParty,
+  resolveClaudeDesktopMode,
   resolveClaudeDesktopApplyMode,
   type ClaudeDesktopMode,
 } from "../claude/desktop-first-party";
@@ -48,6 +49,10 @@ function printDesktopHelp(): void {
       --gateway      install the third-party gateway profile for the whole app
   ocx claude desktop show [--json]
   ocx claude desktop status [--json]
+  ocx claude desktop bind <picker-model-id> <provider/model|native/slug>
+      first-party: serve a Code tab picker model (e.g. claude-sonnet-4-6) with an opencodex model;
+      the picker keeps Anthropic's label, and only Claude Code traffic through the local proxy uses it
+  ocx claude desktop unbind <picker-model-id>
   ocx claude desktop move <provider/model> <opus|fable|sonnet|haiku> [--default]
   ocx claude desktop default <family> <provider/model|none>
   ocx claude desktop export <path|->
@@ -468,6 +473,32 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
         for (const [key, value] of Object.entries(live)) {
           console.log(`${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
         }
+      }
+      return 0;
+    }
+    // Bindings are API-backed for the same reason as `status`: the running proxy routes with
+    // its live config, so the change must land there, not only in the file.
+    if (command === "bind" || command === "unbind") {
+      const [, pickerId, route, ...extra] = argv;
+      const usage = command === "bind"
+        ? "Usage: ocx claude desktop bind <picker-model-id> <provider/model|native/slug>"
+        : "Usage: ocx claude desktop unbind <picker-model-id>";
+      if (!pickerId || (command === "bind" ? !route || extra.length > 0 : route !== undefined)) throw new CliUsageError(usage);
+      const body = command === "bind" ? { set: { [pickerId]: route! } } : { remove: [pickerId] };
+      const result = await runtimeRequest<{ modelBindings?: Record<string, string> }>("/api/claude-desktop/first-party-bindings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const bindings = result.modelBindings ?? {};
+      console.log(command === "bind"
+        ? `Code 탭 피커의 ${pickerId}를 ${route}로 연결했습니다. 다음 요청부터 적용됩니다.`
+        : `${pickerId} 연결을 해제했습니다.`);
+      const ids = Object.keys(bindings).sort();
+      if (ids.length === 0) console.log("현재 연결된 피커 모델이 없습니다.");
+      for (const id of ids) console.log(`  ${id} -> ${bindings[id]}`);
+      if (resolveClaudeDesktopMode(config) === "gateway") {
+        console.warn("⚠️  Desktop이 gateway 모드입니다. 바인딩은 first-party 모드(ocx claude desktop apply --first-party)의 Code 탭과 claude CLI에만 적용됩니다.");
       }
       return 0;
     }

@@ -1240,6 +1240,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       const { inspectDesktop3pConfigLibrary } = await import("../../claude/desktop-3p");
       const { resolveClaudeDesktopApplyMode, inspectDesktopFirstParty } = await import("../../claude/desktop-first-party");
       const { getClaudeInterceptState } = await import("../../claude/intercept/runtime");
+      const { DESKTOP_PICKER_ID_SUGGESTIONS, readInterceptBindings } = await import("../../claude/intercept/model-bindings");
       const persisted = loadConfig();
       const savedFingerprint = persisted.claudeCode?.desktopProfile?.appliedFingerprint ?? null;
       const observed = inspectDesktop3pConfigLibrary({ appliedFingerprint: savedFingerprint });
@@ -1257,6 +1258,9 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         interceptRunning: intercept !== null,
         proxyPort: intercept?.proxyPort ?? firstPartySeen.proxyPort,
         caCertPath: firstPartySeen.caCertPath,
+        // What the running proxy routes with right now (live config), not the file on disk.
+        modelBindings: readInterceptBindings(config.claudeCode),
+        pickerSuggestions: [...DESKTOP_PICKER_ID_SUGGESTIONS],
       };
       const applied = mode === "first-party" ? firstPartySeen.applied : gatewayApplied;
       // "Needs update" is only meaningful while the integration is wanted. When the
@@ -1307,6 +1311,53 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         driftReason,
         health,
       });
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
+  }
+
+  // First-party model bindings: Claude Desktop Code tab picker id -> opencodex route, honoured
+  // only on the claude-intercept ingress (src/claude/intercept/model-bindings.ts).
+  if (url.pathname === "/api/claude-desktop/first-party-bindings" && req.method === "PUT") {
+    let body: unknown;
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try {
+      const { applyInterceptBindingPatch, parseInterceptBindingPatch, readInterceptBindings } = await import("../../claude/intercept/model-bindings");
+      const patch = parseInterceptBindingPatch(body);
+      if ("error" in patch) return jsonResponse({ error: patch.error }, 400);
+      // Same route vocabulary the Desktop profile and the dashboard use, native routes included.
+      const state = await buildClaudeDesktopState(config);
+      const availableRoutes = new Set(state.models.filter(model => model.available).map(model => model.route));
+      let rejection: string | null = null;
+      const outcome = mutatePersistedConfig<OcxConfig["claudeCode"]>(persisted => {
+        const current = readInterceptBindings(persisted.claudeCode);
+        const next = applyInterceptBindingPatch(current, patch, availableRoutes);
+        if (!next.ok) {
+          rejection = next.error;
+          return { changed: false, value: persisted.claudeCode };
+        }
+        if (!next.changed) return { changed: false, value: structuredClone(persisted.claudeCode) };
+        const claudeCode = { ...(persisted.claudeCode ?? {}) };
+        const intercept = { ...(claudeCode.intercept ?? {}) };
+        if (Object.keys(next.bindings).length > 0) intercept.modelMap = next.bindings;
+        else delete intercept.modelMap;
+        if (Object.keys(intercept).length > 0) claudeCode.intercept = intercept;
+        else delete claudeCode.intercept;
+        persisted.claudeCode = claudeCode;
+        return { changed: true, value: structuredClone(persisted.claudeCode) };
+      });
+      if (rejection) return jsonResponse({ error: rejection }, 400);
+      if (outcome.status === "unavailable") {
+        return jsonResponse({ error: `First-party bindings could not be saved (config ${outcome.reason})` }, outcome.reason === "conflict" ? 409 : 500);
+      }
+      adoptPersistedClaudeCode(config, outcome.value);
+      // Pin the committed leaf: an unarmed live snapshot may otherwise keep its old intercept block.
+      const committedIntercept = outcome.value?.intercept;
+      const liveClaudeCode = { ...(config.claudeCode ?? {}) };
+      if (committedIntercept) liveClaudeCode.intercept = structuredClone(committedIntercept);
+      else delete liveClaudeCode.intercept;
+      config.claudeCode = liveClaudeCode;
+      return jsonResponse({ ok: true, modelBindings: readInterceptBindings(config.claudeCode) });
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
     }

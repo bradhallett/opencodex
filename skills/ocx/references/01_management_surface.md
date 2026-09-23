@@ -843,6 +843,32 @@ JSON mode: `payload`.
 - Restarts the Codex desktop app as well as the app-servers, through the same module the CLI uses. When the proxy itself runs inside the Codex app it refuses instead, because restarting the app would kill the request.
 - --yes is mandatory because this interrupts a running editor session, which must never happen because an agent guessed a subcommand.
 
+### `ocx claude desktop bind`
+
+First-party: serve a Claude Desktop Code tab picker model with an opencodex route.
+
+| Method | Route |
+|---|---|
+| PUT | `/api/claude-desktop/first-party-bindings` |
+
+JSON mode: `none`.
+
+- Takes a picker model id (claude-sonnet-4-6) and a route in the Desktop route vocabulary (provider/model or native/<slug>); the route must be one the Desktop profile can offer.
+- Only Claude Code traffic that reaches the proxy through the first-party intercept (Desktop's Code tab, the claude CLI) honours it; ocx claude and the public Messages endpoint are unaffected.
+- The Desktop picker keeps Anthropic's label; the binding changes which model answers, starting with the next request.
+
+### `ocx claude desktop unbind`
+
+Remove a first-party Claude Desktop Code tab picker binding.
+
+| Method | Route |
+|---|---|
+| PUT | `/api/claude-desktop/first-party-bindings` |
+
+JSON mode: `none`.
+
+- Removing an id that is not bound is a no-op; the remaining bindings are printed.
+
 ### `ocx integration native`
 
 Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations, and read the Cursor status (which builds are installed, gateway values, last request seen).
@@ -930,6 +956,6 @@ JSON mode: `payload`.
 
 ## Counts
 
-- declared capabilities: 50
-- of those, state-changing: 25
+- declared capabilities: 52
+- of those, state-changing: 27
 - head-resolved invocations: 2

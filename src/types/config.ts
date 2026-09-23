@@ -142,8 +142,13 @@ export interface OcxClaudeCodeConfig {
    * traffic without any `ANTHROPIC_BASE_URL` rewrite (src/claude/intercept). Claude Code reaches
    * it via `HTTPS_PROXY`/`NODE_EXTRA_CA_CERTS` in its settings env. Default: enabled on a
    * hub; the proxy port defaults to the public port + 100.
+   *
+   * `modelMap` holds first-party model bindings (src/claude/intercept/model-bindings.ts): a
+   * Claude Desktop Code tab picker id such as `claude-sonnet-4-6` mapped to an opencodex route in
+   * the Desktop route vocabulary (`provider/model`, or `native/<slug>`). Bindings apply only to
+   * requests that arrive through the intercept pair, overlaid on the global `modelMap`.
    */
-  intercept?: { enabled?: boolean; port?: number };
+  intercept?: { enabled?: boolean; port?: number; modelMap?: Record<string, string> };
   /**
    * Bundled-skill content elision for ROUTED (non-Anthropic) models (devlog 260712
    * 060): Skill-tool results whose skill name matches an entry here are replaced
