@@ -79,12 +79,35 @@ fn is_app_origin(url: &Url) -> bool {
 pub fn show(window: &WebviewWindow) {
     let _ = window.show();
     let _ = window.set_focus();
+    report_visibility(window, true);
     apply_tray_policy(window.app_handle(), true);
 }
 
 pub fn hide(window: &WebviewWindow) {
     let _ = window.hide();
+    report_visibility(window, false);
     apply_tray_policy(window.app_handle(), false);
+}
+
+/// Tell the main window's page whether its host window is visible.
+///
+/// Windows WebView2 does not flip `document.visibilityState` when the host window is hidden
+/// (tauri issues #10592 and #6864), so the dashboard's pollers keep running while the app sits in
+/// the tray; macOS WKWebView does flip it. Publishing the host's own answer gives the GUI one
+/// signal on every platform instead of one that is correct on only some of them.
+///
+/// Only the `main` window publishes: `exit::hide_windows` hides every window through `hide`,
+/// and the tray popup carries its own equivalent bridge, so an unguarded report would claim the
+/// dashboard was hidden because a popup was. A page that has not loaded yet simply misses the eval;
+/// the page-load hook re-sends the current state.
+pub fn report_visibility(window: &WebviewWindow, visible: bool) {
+    if window.label() != "main" {
+        return;
+    }
+    let script = format!(
+        "window.__OPENCODEX_HOST_VISIBLE__ = {visible}; window.dispatchEvent(new CustomEvent('opencodex:host-visibility', {{detail: {visible}}}));"
+    );
+    let _ = window.eval(script);
 }
 
 #[cfg(target_os = "macos")]
@@ -156,5 +179,48 @@ mod tests {
         } else {
             assert!(user_agent.contains("(X11; Linux x86_64)"));
         }
+    }
+
+    /// The zoom polyfill runs inside the loopback dashboard, which is a remote origin to Tauri. The
+    /// capability that lets it call `set_webview_zoom` is the only one reaching that origin, so it
+    /// stays pinned to this window, this origin and this one command.
+    #[test]
+    fn the_dashboard_reaches_only_the_zoom_command() {
+        let zoom: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/dashboard-zoom.json"))
+                .expect("dashboard-zoom capability is JSON");
+        assert_eq!(zoom["windows"], serde_json::json!(["main"]));
+        assert_eq!(
+            zoom["remote"]["urls"],
+            serde_json::json!(["http://127.0.0.1:*"])
+        );
+        assert_eq!(
+            zoom["permissions"],
+            serde_json::json!(["core:webview:allow-set-webview-zoom"])
+        );
+
+        // Tauri matches the origin with URLPattern; the dashboard is the loopback endpoint on
+        // whatever port it resolved to, and nothing beside it.
+        let pattern: tauri_utils::acl::RemoteUrlPattern =
+            "http://127.0.0.1:*".parse().expect("a URL pattern");
+        let dashboard = crate::endpoint::ProxyEndpoint {
+            host: "127.0.0.1",
+            port: 10100,
+        }
+        .url("/#/usage");
+        assert!(pattern.test(&url(&dashboard)), "{dashboard}");
+        for value in [
+            "http://localhost:10100/",
+            "https://127.0.0.1:10100/",
+            "http://127.0.0.2:10100/",
+            "http://example.com/",
+        ] {
+            assert!(!pattern.test(&url(value)), "{value}");
+        }
+
+        let default: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("default capability is JSON");
+        assert!(default.get("remote").is_none());
     }
 }

@@ -237,7 +237,24 @@ pub fn run() {
                     .inner_size(1100.0, 720.0)
                     .visible(false)
                     .user_agent(&window::webview_user_agent())
+                    // Cmd on macOS, Ctrl elsewhere, with + / - / 0. WebView2 zooms natively; on
+                    // macOS and Linux Tauri injects a keydown polyfill whose one IPC call is granted
+                    // to the loopback dashboard by `capabilities/dashboard-zoom.json`.
+                    .zoom_hotkeys_enabled(true)
                     .on_navigation(window::navigation_allowed(app.handle().clone()))
+                    // A hidden window still loads pages: wry builds this one with WebView2
+                    // IsVisible=false, and the bootstrap page navigates to the dashboard URL
+                    // afterwards, so the eval that a later show or hide would rely on has nowhere
+                    // to land during a reload. Re-sending the current state here is what keeps the
+                    // GUI's answer correct across navigation.
+                    .on_page_load(|window, payload| {
+                        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                            window::report_visibility(
+                                &window,
+                                window.is_visible().unwrap_or(false),
+                            );
+                        }
+                    })
                     .build()?;
             window::configure(&window);
             if startup::LaunchOrigin::detect() == startup::LaunchOrigin::User {
@@ -256,6 +273,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building OpenCodex desktop shell")
         .run(|app, event| {
+            // Dock/Finder reopening an existing macOS app does not launch a second instance.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_dashboard(app.clone());
+            }
             // Window close and the platform quit gesture arrive here as an exit request, and until
             // this handler existed they went straight through to a SIGKILL of the runtime. D2 makes
             // them hide; only the tray's Quit, and an update's coordinated restart, get past.

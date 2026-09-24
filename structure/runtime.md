@@ -187,7 +187,7 @@ described in [OpenAI quota ownership](providers/openai-tiers.md#public-provider-
 `runtime-port.json` through `src/config/process-state.ts`, syncs Codex config/catalog, then serves
 until shutdown. Normal shutdown restores native Codex. Service mode sets
 `OCX_SERVICE=1`, so managed restarts do not repeatedly restore/reinject; explicit service stop and
-uninstall still restore.
+uninstall still restore. `src/service/cli.ts` removes the service token on uninstall only when persisted client state is disconnected and no pending connect marker owns the newly issued key. `src/client/connect.ts` publishes that fingerprint marker before the key, then clears it with the connection commit or rollback under the client lifecycle and config mutation locks. Connected, invalid, or mismatched client state retains an existing token. A valid pending marker retains only its matching fingerprint; an older marker does not own a replacement service key. An absent token is reported as absent; unsafe, malformed, or unreadable markers and lock, state-read, or deletion failures leave cleanup unverified.
 The package-tree integrity fence for live package replacement follows the
 [update transaction contract](ops/docs-and-release.md#package-tree-integrity-fence).
 
@@ -253,7 +253,7 @@ configured Anthropic upstream. The pair is on by default on a hub (`claudeCode.i
 its proxy port defaults to the public port + 100 (`claudeCode.intercept.port`), and a bind failure
 degrades to a startup warning rather than a startup failure; stop joins both sockets. A server asked
 for an ephemeral public port (`startServer(0)`, the shape every in-process test fixture uses) has no
-stable port to derive from, so the pair stays off unless `claudeCode.intercept.port` is explicit.
+stable port to derive from, so the pair stays off unless `claudeCode.intercept.port` is explicit. Requests on this ingress also honour first-party model bindings (`claudeCode.intercept.modelMap`); see [Claude Desktop](clients/claude-desktop.md#first-party-model-bindings). Picker mode adds a second, Desktop-only CONNECT proxy on the next port; see [Claude Desktop](clients/claude-desktop.md#picker-mode-the-desktop-egress-proxy).
 
 Auxiliary listener bind failures carry the listener key and effective address through `AuxiliaryListenerBindError` in `src/server/ports.ts`. `src/cli/index.ts` reports them without retrying the public port. Startup still rolls back every earlier socket synchronously.
 
@@ -486,9 +486,7 @@ Renamed fixed-key providers receive [missing reasoning metadata](catalog.md#rena
 Translated audio/file admission follows the [final-adapter input contract](adapters/registry.md#untranslated-input-media); native raw passthrough remains separate.
 ## Request-local target compatibility
 
-Google's final adapter compiler may emit an opt-in, content-free
-[tool-schema loss diagnostic](providers/google.md#google-tool-schema-loss-reporting). It observes
-adapter-local narrowing only and changes neither provider routing nor the serialized request body.
+Google's final adapter compiler may emit an opt-in, content-free [tool-schema loss diagnostic](providers/google.md#google-tool-schema-loss-reporting). It observes adapter-local narrowing only and changes neither provider routing nor the serialized request body.
 
 `src/adapters/openai-responses.ts` omits only top-level `user` at the canonical ChatGPT Codex forward destination. Claude translation retains its original identity and prompt-cache key; public API and noncanonical gateways retain their `user` field. Input roles, tool-schema properties, safety identifiers and original replay bodies are not changed.
 
@@ -503,6 +501,8 @@ A definite context-window overflow is the fourth request-local verdict. A hetero
 This is also why the classifier cannot duplicate visible output. Native byte streams reach combo classification only through `preflightComboStreamResponse`, which commits the child on any text, tool call or unknown event and synthesizes a failure envelope only for a zero-output terminal. A `runTurn` adapter has the equivalent boundary in `preflightAdapterEvents`: when the first meaningful event is an undeclared tool call and no replay-unsafe heartbeat recorded a side effect, `src/server/responses/run-turn-execution.ts` checks it against the exact current request catalog and projects the existing fail-closed refusal as a pre-commit 502 so failover can continue without changing the catalog. Any earlier text, tool call, control boundary, unknown event or replay-unsafe heartbeat commits that child, so a turn whose output the client may have seen or whose side effect may have run is never replayed.
 
 Regression coverage: `tests/responses/responses-forward-prompt-envelope.test.ts`, `tests/routing/router-combo-failover-classification.test.ts`, `tests/routing/routing-policy-fallback.test.ts`, `tests/helpers/combo-context-overflow-cases.ts`, and `tests/server/server-combo-failover-e2e.test.ts`.
+
+`src/combos/failover.ts` caps explicit upstream `Retry-After` target cooldowns at 24 hours while reset-derived, configured, and fallback cooldowns remain capped at 10 minutes.
 
 ## Combo default effort precedence
 

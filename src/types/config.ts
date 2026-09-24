@@ -142,8 +142,19 @@ export interface OcxClaudeCodeConfig {
    * traffic without any `ANTHROPIC_BASE_URL` rewrite (src/claude/intercept). Claude Code reaches
    * it via `HTTPS_PROXY`/`NODE_EXTRA_CA_CERTS` in its settings env. Default: enabled on a
    * hub; the proxy port defaults to the public port + 100.
+   *
+   * `modelMap` holds first-party model bindings (src/claude/intercept/model-bindings.ts): a
+   * Claude Desktop Code tab picker id such as `claude-sonnet-4-6` mapped to an opencodex route in
+   * the Desktop route vocabulary (`provider/model`, or `native/<slug>`). Bindings apply only to
+   * requests that arrive through the intercept pair, overlaid on the global `modelMap`.
    */
-  intercept?: { enabled?: boolean; port?: number };
+  intercept?: {
+    enabled?: boolean;
+    port?: number;
+    /** First-party Desktop Code-tab picker injection; unset enables it when eligible. */
+    picker?: boolean;
+    modelMap?: Record<string, string>;
+  };
   /**
    * Bundled-skill content elision for ROUTED (non-Anthropic) models (devlog 260712
    * 060): Skill-tool results whose skill name matches an entry here are replaced
@@ -175,10 +186,12 @@ export interface OcxClaudeCodeConfig {
   desktopProfile?: OcxClaudeDesktopProfile;
   /**
    * How Claude Desktop reaches opencodex (src/claude/desktop-first-party.ts).
-   * `first-party` (default) leaves the app on its normal claude.ai login and redirects only the
-   * Code tab's Claude Code process through the intercept pair via settings.json env.
-   * `gateway` installs the third-party deployment profile (desktop-3p) for the whole app.
-   * Unset on an install that already applied a gateway profile resolves to `gateway`.
+   * `gateway` (default) installs the third-party deployment profile (desktop-3p) for the whole app.
+   * `first-party` leaves the app on its normal claude.ai login and redirects only the Code tab's
+   * Claude Code process through the intercept pair via settings.json env; it sends Claude
+   * subscription traffic through a local interception proxy and carries an account-risk warning
+   * (src/claude/desktop-risk.ts). Unset: a gateway row or apply marker resolves to `gateway`, and
+   * first-party env that opencodex wrote resolves to `first-party` (observeClaudeDesktopMode).
    */
   desktopMode?: "first-party" | "gateway";
   /** Auto-reconcile Desktop 3P config when provider catalog changes. Default: enabled. */
@@ -498,7 +511,13 @@ export interface OcxConfig {
    * "no fast tier was requested".
    */
   ultraFastTier?: boolean;
-  /** Stop new identity-matched main-account requests at observed 99% usage. Default off. */
+  /**
+   * Stop new identity-matched main-account requests at observed 98% usage (#5694).
+   *
+   * On by default: an absent key and `true` both enable it, and only an explicit `false`
+   * opts out. While it blocks, the main account's Luna Reserve cannot activate, so an operator
+   * who wants Reserve has to turn the setting off rather than delete the key.
+   */
   codexMainAccountHardLock?: boolean;
   /** Explicit top-level deletion intent used by stale whole-config rebases. */
   configRebaseProvenance?: OcxConfigRebaseProvenance | Record<string, unknown>;
@@ -1134,11 +1153,20 @@ export type OcxComboDefaultEffortMode = "fallback" | "force";
  */
 export type OcxComboReasoningEffortMode = "strict" | "adaptive";
 
+/** Policy for how target cooldowns interact with `lastResort` targets (#5691). */
+export type OcxComboCooldownWaitPolicy = "before-last-resort";
+
 export interface OcxComboTarget {
   provider: string;
   model: string;
   /** Relative target weight for round-robin batches and random selection. Default 1; valid range 1..10000. */
   weight?: number;
+  /**
+   * Marks an emergency-only target. Inert unless the combo sets
+   * `cooldownWaitPolicy`, and never makes a target permanently ineligible —
+   * see `OcxComboConfig.cooldownWaitPolicy` (#5691).
+   */
+  lastResort?: boolean;
 }
 
 export interface OcxComboConfig {
@@ -1155,6 +1183,18 @@ export interface OcxComboConfig {
   cooldownMs?: number;
   /** Maximum wait for an eligible target cooldown to expire before failing closed. Default 0; range 0..600000, per selection attempt. */
   waitForCooldownMs?: number;
+  /**
+   * `before-last-resort` defers targets marked `lastResort` while a normal
+   * target is merely cooling and that cooldown can be waited out inside
+   * `waitForCooldownMs`. Omitted keeps today's behavior, where a brief cooldown
+   * on a preferred target routes straight to the emergency target (#5691).
+   *
+   * It only ever defers. When no normal target can be reached — all cooling
+   * past the budget, excluded, or ruled out by the caller — the last-resort
+   * target is dispatched, because a policy that could withhold it would turn a
+   * fallback into an outage.
+   */
+  cooldownWaitPolicy?: OcxComboCooldownWaitPolicy;
   /** Used as a fallback when the client omits reasoning.effort, or as an override in `force` mode. null/omitted leaves the target default unchanged. */
   defaultEffort?: OcxComboDefaultEffort | null;
   /** `force` makes the combo default override a valid client effort. Omitted / `fallback` preserves client precedence. */
