@@ -487,6 +487,62 @@ describe("runWithImageBridge", () => {
     expect(buildRequestCalls).toBe(1);
   });
 
+  test("a pacing admission refusal before a runTurn iteration is a retryable 429, not a 502", async () => {
+    const runTurnAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      runTurn: async () => {
+        throw new Error("unreached: admission refused before the turn ran");
+      },
+    };
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: runTurnAdapter,
+      plan,
+      waitForRequestSlot: async () => {
+        throw new RequestPacingQueueOverloadError("demo", "queue_full", 5);
+      },
+    });
+    // runTurn adapters skip the eager drain (SSE headers must not wait on queue.collect()),
+    // so the refusal surfaces in-stream, encoded as a retryable rate limit rather than a 502.
+    expect(response.status).toBe(200);
+    const sse = await response.text();
+    expect(sse).toContain("request pacing queue for provider 'demo' is full");
+    expect(sse).toContain("rate_limit_error");
+    expect(sse).not.toContain("response.completed");
+  });
+
+  test("a pacing admission refusal on a reset replay is a retryable 429, not a 502", async () => {
+    let sends = 0;
+    let admissions = 0;
+    const resetReplayAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: undefined,
+      parseStream: async function* (): AsyncGenerator<AdapterEvent> {
+        yield { type: "done" };
+      },
+    };
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: resetReplayAdapter,
+      plan,
+      waitForRequestSlot: async () => {
+        admissions += 1;
+        if (admissions === 1) return { leased: false, bodyTracked: false, released: false, release: () => {} };
+        throw new RequestPacingQueueOverloadError("demo", "queue_expired", 5);
+      },
+      fetchForRequest: () => async () => {
+        sends += 1;
+        if (sends === 1) {
+          throw Object.assign(new Error("socket connection was closed unexpectedly"), { code: "ECONNRESET" });
+        }
+        throw new Error("unreached: the replay was refused before its send");
+      },
+    });
+    expect(sends).toBe(1);
+    expect(response.status).toBe(429);
+    expect(await response.text()).toContain("exceeded the maximum queued age");
+  });
+
   test("a rejecting on429 hook cancels the tracked body so its pacing lease returns", async () => {
     let releases = 0;
     let sends = 0;

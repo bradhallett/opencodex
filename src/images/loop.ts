@@ -27,7 +27,7 @@ import {
 } from "../providers/request-pacing";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { applyUpstreamRecoveryInit, cancelResponseBodyBestEffort, fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
+import { applyUpstreamRecoveryInit, cancelResponseBodyBestEffort, fetchWithResetRetry, prepareSameTarget429Wait, UpstreamRetryEvidenceError } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   createTranslatorBudget,
@@ -764,6 +764,13 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       }
       if (signal.aborted) throw new LoopError(499, "client closed request during image-bridge");
       if (error instanceof LoopError) throw error;
+      // The reset-retry layer wraps a later callback rejection in evidence once a send's reset
+      // reached the origin (#914). A pacing refusal thrown while re-acquiring the replay's lease
+      // is still a local, retryable admission decision: unwrap it before the generic 502
+      // flattening so the 429 classification survives (same rule as the auth-context seam).
+      if (error instanceof UpstreamRetryEvidenceError && error.cause instanceof LoopError) {
+        throw error.cause;
+      }
       throw new LoopError(502, `Provider unreachable: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       headerDeadline.clear();

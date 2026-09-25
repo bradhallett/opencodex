@@ -569,13 +569,15 @@ export function trackProviderRequestSlotBody(
       statusText: response.statusText,
       headers: response.headers,
     });
-  } catch (error) {
+  } catch {
     // A non-conforming status (a proxy passing a raw 6xx through) or a body on a
     // null-body status throws here after markBodyTracked, and boundary cleanup skips
     // body-tracked slots: return the lease now instead of waiting out the deadline.
+    // The abandoned rewrap never locked the source (no pull ran), so hand back the
+    // ORIGINAL response with its body intact: rethrowing would make the google-http,
+    // command-code and mimo retry ladders replay a request whose response did arrive.
     release();
-    void source.cancel().catch(() => {});
-    throw error;
+    return response;
   }
   // Retry helpers mark the response they return from, and recovery decisions key on these
   // identity markers; the rewrap must not make a non-replayable response look replayable.

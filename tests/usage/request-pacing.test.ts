@@ -22,8 +22,9 @@ import {
   isReplayRefusalResponse,
   retainReplayRefusal,
 } from "../../src/lib/upstream-retry";
-import { providerFetch } from "../../src/server/responses/fetch-helpers";
+import { __resetEgressWebsocketDowngradeNotices, providerFetch } from "../../src/server/responses/fetch-helpers";
 import { fetchWithHeaderTimeout } from "../../src/server/responses/fetch-helpers";
+import { CODEX_RESPONSES_HTTP_URL } from "../../src/server/responses/codex-ws-request";
 import { requestPacingOverloadResponse } from "../../src/server/responses/pacing-overload";
 import { requestPacingConfigError } from "../../src/config/schema/leaf-validators";
 import type { OcxProviderConfig } from "../../src/types";
@@ -678,22 +679,26 @@ describe("request pacing concurrency caps", () => {
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 
-  test("a non-conforming status throws after tracking and returns the lease immediately", async () => {
+  test("a non-conforming status returns the original response and releases the lease immediately", async () => {
     const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
     const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
     let cancelled = false;
     const source = new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(new TextEncoder().encode("chunk")); },
+      start(controller) { controller.enqueue(new TextEncoder().encode("chunk")); controller.close(); },
       cancel: () => { cancelled = true; },
     });
     // Bun's fetch passes a raw non-2xx-5xx status through; rewrapping it in new Response
-    // throws AFTER markBodyTracked, and boundary cleanup skips body-tracked slots.
+    // throws AFTER markBodyTracked, and boundary cleanup skips body-tracked slots. The
+    // abandoned rewrap never locked the source, so the original response goes back intact:
+    // rethrowing would make the retry ladders replay a request whose response did arrive.
     const raw = new Response(source);
     Object.defineProperty(raw, "status", { value: 601 });
-    expect(() => trackProviderRequestSlotBody(slot, raw)).toThrow();
+    const tracked = trackProviderRequestSlotBody(slot, raw);
+    expect(tracked).toBe(raw);
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(cancelled).toBe(true);
+    expect(cancelled).toBe(false);
+    expect(await new Response(raw.body).text()).toBe("chunk");
     const next = await waitForProviderRequestSlot("demo", configured, "model-a");
     next.release();
   });
@@ -813,6 +818,50 @@ describe("request pacing concurrency caps", () => {
     const executor = providerFetch(configured);
     await expect(executor("https://example.test/v1/send"))
       .rejects.toThrow("providerName");
+  });
+
+  test("pacingSlotAcquired without a slot refuses the send instead of skipping enforcement", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const executor = providerFetch(configured, undefined, {
+      providerName: "demo",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+    });
+    await expect(executor("https://example.test/v1/send"))
+      .rejects.toThrow("providerFetch requires pacingSlot");
+  });
+
+  test("a concurrency cap downgrades an eligible WebSocket turn to HTTP/SSE once per provider", async () => {
+    __resetEgressWebsocketDowngradeNotices();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    try {
+      const sends: string[] = [];
+      const configured = {
+        ...provider({ enabled: true, maxConcurrentRequests: 2 }),
+        fetch: (async (input: Parameters<typeof globalThis.fetch>[0]) => {
+          sends.push(String(input));
+          return new Response("http ok");
+        }) as typeof globalThis.fetch,
+      } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+      const executor = providerFetch(configured, "1.4.0", { providerName: "demo", modelId: "model-a" });
+      const init = { method: "POST", body: JSON.stringify({ stream: true }) };
+      const first = await executor(CODEX_RESPONSES_HTTP_URL, init);
+      expect(await first.text()).toBe("http ok");
+      // The custom executor only sits under the HTTP path, so a served body proves the
+      // downgrade; the WebSocket upstream was never dialed.
+      expect(sends).toEqual([CODEX_RESPONSES_HTTP_URL]);
+      const second = await executor(CODEX_RESPONSES_HTTP_URL, init);
+      expect(await second.text()).toBe("http ok");
+      expect(sends.length).toBe(2);
+      const downgradeWarnings = warnings.filter(warning => warning.includes("requestPacing.maxConcurrentRequests"));
+      expect(downgradeWarnings.length).toBe(1);
+      expect(downgradeWarnings[0]).toContain("served over HTTP/SSE");
+      expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   test("a send refused before the executor consumes the lease returns it at the boundary release", async () => {
