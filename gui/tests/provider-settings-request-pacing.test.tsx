@@ -110,3 +110,27 @@ test("a concurrency-only pacing rule saves without the rule-required error", asy
   expect(container.textContent).not.toContain("Enable request pacing only after setting a provider limit");
   await act(async () => { container.unmount(); });
 });
+
+test("discard reverts an unsaved concurrency draft to the stored cap", async () => {
+  const item: WorkspaceItem = {
+    name: "nvidia",
+    adapter: "openai-chat",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    authMode: "key",
+    requestPacing: { enabled: true, requestsPerMinute: 120, maxConcurrentRequests: 5 },
+  };
+  const patches: ProviderUpdatePatch[] = [];
+  const container = await renderSettings(item, async (_name, patch) => { patches.push(patch); return { ok: true }; });
+
+  const providerNumbers = container.querySelectorAll<HTMLInputElement>('.pwi-pacing-grid:not(.pwi-pacing-grid--model) input[type="number"]');
+  expect(providerNumbers[2]!.value).toBe("5");
+  await setInput(providerNumbers[2]!, "9");
+  expect(providerNumbers[2]!.value).toBe("9");
+
+  const discard = container.querySelector<HTMLButtonElement>(".pwi-settings-sticky-bar .btn-ghost")!;
+  await act(async () => { discard.click(); });
+
+  expect(providerNumbers[2]!.value).toBe("5");
+  expect(patches).toEqual([]);
+  await act(async () => { container.unmount(); });
+ });

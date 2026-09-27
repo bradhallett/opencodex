@@ -327,7 +327,9 @@ export default function ProviderSettings({
     setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(savedLiveModels);
     setCursorHttpVersion(savedCursorHttpVersion); setMsg(null);
     setPacingEnabled(item.requestPacing?.enabled === true); setPacingRpm(numberDraft(item.requestPacing?.requestsPerMinute));
-    setPacingDelay(numberDraft(item.requestPacing?.minIntervalMs)); setPacingModels({ ...(item.requestPacing?.models ?? {}) });
+    setPacingDelay(numberDraft(item.requestPacing?.minIntervalMs));
+    setPacingConcurrency(numberDraft(item.requestPacing?.maxConcurrentRequests));
+    setPacingModels({ ...(item.requestPacing?.models ?? {}) });
     setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl));
   };
 
