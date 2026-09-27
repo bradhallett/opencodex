@@ -134,3 +134,18 @@ test("discard reverts an unsaved concurrency draft to the stored cap", async () 
   expect(patches).toEqual([]);
   await act(async () => { container.unmount(); });
  });
+
+test("pacing grids keep every field and the add button on one row", async () => {
+  const css = await Bun.file(new URL("../src/styles/provider-workspace-settings.css", import.meta.url)).text();
+  // The provider grid owns three inputs (rpm, interval, concurrency) and the model
+  // grid owns five children (name, rpm, interval, concurrency, add). A template with
+  // fewer tracks wraps the tail onto a half-empty second row.
+  const providerStart = css.indexOf(".pwi-pacing-grid {");
+  expect(providerStart).toBeGreaterThan(-1);
+  const providerRule = css.slice(providerStart, css.indexOf("}", providerStart));
+  expect(providerRule).toContain("grid-template-columns: repeat(3, minmax(0, 1fr))");
+  const modelStart = css.indexOf(".pwi-pacing-grid--model {");
+  expect(modelStart).toBeGreaterThan(-1);
+  const modelRule = css.slice(modelStart, css.indexOf("}", modelStart));
+  expect(modelRule).toContain("grid-template-columns: minmax(160px, 2fr) repeat(3, minmax(110px, 1fr)) auto");
+});
