@@ -2703,6 +2703,7 @@ export const de: Record<TKey, string> = {
   "pws.pacingRemove": "Entfernen",
   "pws.pacingRemoveModel": "Anfragetaktung für {model} entfernen",
   "pws.pacingRuleRequired": "Legen Sie zuerst ein Anbieterlimit oder eine Modellregel fest.",
+  "pws.pacingCapInvalid": "Maximale gleichzeitige Anforderungen muss eine ganze Zahl größer oder gleich 1 sein.",
   "pws.saving": "Wird gespeichert…",
   "pws.settingsSaved": "Einstellungen gespeichert.",
   "pws.accountModeSaved": "Kontomodus gespeichert.",

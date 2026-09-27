@@ -1724,6 +1724,7 @@ export const tr: Record<TKey, string> = {
   "pws.pacingRemove": "Kaldır",
   "pws.pacingRemoveModel": "{model} için istek aralığı kuralını kaldır",
   "pws.pacingRuleRequired": "Önce bir sağlayıcı sınırı veya model kuralı belirleyin.",
+  "pws.pacingCapInvalid": "Maksimum eşzamanlı istek sayısı 1 veya daha büyük bir tam sayı olmalıdır.",
   "pws.saving": "Kaydediliyor…",
   "pws.settingsSaved": "Ayarlar kaydedildi.",
   "pws.accountModeSaved": "Hesap modu kaydedildi.",

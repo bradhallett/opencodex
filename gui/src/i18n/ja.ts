@@ -1614,6 +1614,7 @@ export const ja: Record<TKey, string> = {
   "pws.pacingRemove": "削除",
   "pws.pacingRemoveModel": "{model} のリクエスト間隔設定を削除",
   "pws.pacingRuleRequired": "プロバイダー制限またはモデル別設定を追加してから有効にしてください。",
+  "pws.pacingCapInvalid": "最大同時リクエスト数は 1 以上の整数にしてください。",
   "pws.saving": "保存中…",
   "pws.settingsSaved": "設定を保存しました。",
   "pws.accountModeSaved": "アカウントモードを保存しました。",

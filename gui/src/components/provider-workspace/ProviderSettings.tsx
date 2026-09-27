@@ -240,6 +240,9 @@ export default function ProviderSettings({
     setSaving(true);
     setMsg(null);
     try {
+      if (pacingConcurrency.trim() !== "" && positiveInteger(pacingConcurrency) === undefined) {
+        setMsg({ ok: false, text: t("pws.pacingCapInvalid") }); return false;
+      }
       if (pacingEnabled && !pacingDraft.requestsPerMinute && !pacingDraft.minIntervalMs && !pacingDraft.maxConcurrentRequests && !pacingDraft.models) {
         setMsg({ ok: false, text: t("pws.pacingRuleRequired") }); return false;
       }
@@ -347,6 +350,10 @@ export default function ProviderSettings({
     const rpm = positiveRpm(pacingModelRpm);
     const delay = positiveInteger(pacingModelDelay);
     const cap = positiveInteger(pacingModelConcurrency);
+    if (pacingModelConcurrency.trim() !== "" && cap === undefined) {
+      setMsg({ ok: false, text: t("pws.pacingCapInvalid") });
+      return;
+    }
     if (!modelId || (rpm === undefined && delay === undefined && cap === undefined)) return;
     setPacingModels(current => ({
       ...current,

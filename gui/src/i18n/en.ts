@@ -1738,6 +1738,7 @@ export const en = {
   "pws.pacingRemove": "Remove",
   "pws.pacingRemoveModel": "Remove request pacing override for {model}",
   "pws.pacingRuleRequired": "Enable request pacing only after setting a provider limit or a model override.",
+  "pws.pacingCapInvalid": "Max concurrent requests must be a whole number of 1 or more.",
   "pws.saving": "Saving…",
   "pws.settingsSaved": "Settings saved.",
   "pws.accountModeSaved": "Account mode saved.",

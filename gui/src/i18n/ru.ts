@@ -1705,6 +1705,7 @@ export const ru: Record<TKey, string> = {
   "pws.pacingRemove": "Удалить",
   "pws.pacingRemoveModel": "Удалить интервал запросов для {model}",
   "pws.pacingRuleRequired": "Сначала задайте лимит провайдера или правило модели.",
+  "pws.pacingCapInvalid": "Максимальное количество одновременных запросов должно быть целым числом не меньше 1.",
   "pws.saving": "Сохранение…",
   "pws.settingsSaved": "Настройки сохранены.",
   "pws.accountModeSaved": "Режим аккаунта сохранён.",

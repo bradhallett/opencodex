@@ -2742,6 +2742,7 @@ export const ko: Record<TKey, string> = {
   "pws.pacingRemove": "제거",
   "pws.pacingRemoveModel": "{model} 모델의 요청 속도 설정 제거",
   "pws.pacingRuleRequired": "프로바이더 제한이나 모델별 제한을 하나 이상 설정한 뒤 요청 속도 조절을 켜세요.",
+  "pws.pacingCapInvalid": "최대 동시 요청 수는 1 이상의 정수여야 합니다.",
   "pws.saving": "저장 중…",
   "pws.settingsSaved": "설정이 저장되었습니다.",
   "pws.accountModeSaved": "계정 모드가 저장되었습니다.",

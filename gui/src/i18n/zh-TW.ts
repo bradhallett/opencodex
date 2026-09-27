@@ -1411,6 +1411,7 @@ export const zhTW: Record<TKey, string> = {
   "pws.pacingRemove": "移除",
   "pws.pacingRemoveModel": "移除 {model} 的請求節流規則",
   "pws.pacingRuleRequired": "請先設定供應商限制或模型規則，再啟用請求節流。",
+  "pws.pacingCapInvalid": "最大同時請求數必須是 1 以上的整數。",
   "pws.saving": "儲存中…",
   "pws.settingsSaved": "設定已儲存。",
   "pws.settingsUnsavedBar": "有未儲存的更改。",

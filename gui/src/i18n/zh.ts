@@ -2723,6 +2723,7 @@ export const zh: Record<TKey, string> = {
   "pws.pacingRemove": "移除",
   "pws.pacingRemoveModel": "移除 {model} 的请求节流规则",
   "pws.pacingRuleRequired": "请先设置提供商限制或模型规则，再启用请求节流。",
+  "pws.pacingCapInvalid": "最大并发请求数必须是大于或等于 1 的整数。",
   "pws.saving": "保存中…",
   "pws.settingsSaved": "设置已保存。",
   "pws.accountModeSaved": "账户模式已保存。",

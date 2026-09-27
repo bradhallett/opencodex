@@ -1685,6 +1685,7 @@ export const fr: Record<TKey, string> = {
   "pws.pacingRemove": "Supprimer",
   "pws.pacingRemoveModel": "Supprimer le remplacement du cadencement des requêtes pour {model}",
   "pws.pacingRuleRequired": "Activez le cadencement des requêtes seulement après avoir défini une limite de fournisseur ou un remplacement par modèle.",
+  "pws.pacingCapInvalid": "Le nombre maximal de requêtes simultanées doit être un nombre entier supérieur ou égal à 1.",
   "pws.providerId": "ID du fournisseur",
   "pws.reauth": "Réauthentification requise",
   "pws.reauthenticate": "Réauthentifier",

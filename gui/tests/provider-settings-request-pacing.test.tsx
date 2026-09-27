@@ -149,3 +149,52 @@ test("pacing grids keep every field and the add button on one row", async () => 
   const modelRule = css.slice(modelStart, css.indexOf("}", modelStart));
   expect(modelRule).toContain("grid-template-columns: minmax(160px, 2fr) repeat(3, minmax(110px, 1fr)) auto");
 });
+
+test("an invalid nonempty concurrency draft blocks saving instead of silently dropping the cap", async () => {
+  const item: WorkspaceItem = {
+    name: "nvidia",
+    adapter: "openai-chat",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    authMode: "key",
+    requestPacing: { enabled: true, requestsPerMinute: 120, maxConcurrentRequests: 5 },
+  };
+  const patches: ProviderUpdatePatch[] = [];
+  const container = await renderSettings(item, async (_name, patch) => { patches.push(patch); return { ok: true }; });
+
+  const providerNumbers = container.querySelectorAll<HTMLInputElement>('.pwi-pacing-grid:not(.pwi-pacing-grid--model) input[type="number"]');
+  await setInput(providerNumbers[2]!, "0");
+  const save = container.querySelector<HTMLButtonElement>(".pwi-settings-sticky-bar .btn-primary")!;
+  await act(async () => { save.click(); });
+  expect(patches).toEqual([]);
+  expect(container.textContent).toContain("Max concurrent requests must be a whole number of 1 or more.");
+
+  // A blank draft stays the intentional way to clear a stored cap.
+  await setInput(providerNumbers[2]!, "");
+  await act(async () => { save.click(); });
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.requestPacing).toEqual({ enabled: true, requestsPerMinute: 120 });
+  await act(async () => { container.unmount(); });
+});
+
+test("an invalid nonempty cap blocks replacing a model rule instead of dropping its cap", async () => {
+  const item: WorkspaceItem = {
+    name: "nvidia",
+    adapter: "openai-chat",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    authMode: "key",
+    requestPacing: { enabled: true, requestsPerMinute: 120, models: { "deepseek-ai/deepseek-v4-flash-0731": { requestsPerMinute: 60, maxConcurrentRequests: 5 } } },
+  };
+  const container = await renderSettings(item, async () => ({ ok: true }));
+
+  const modelInput = container.querySelector<HTMLInputElement>('.pwi-pacing-grid--model input[list]')!;
+  const modelNumbers = container.querySelectorAll<HTMLInputElement>('.pwi-pacing-grid--model input[type="number"]');
+  await setInput(modelInput, "deepseek-ai/deepseek-v4-flash-0731");
+  await setInput(modelNumbers[0]!, "30");
+  await setInput(modelNumbers[2]!, "0");
+  await act(async () => { container.querySelector<HTMLButtonElement>(".pwi-pacing-grid--model button")!.click(); });
+
+  expect(container.textContent).toContain("Max concurrent requests must be a whole number of 1 or more.");
+  expect(container.querySelector(".pwi-pacing-overrides")!.textContent).toContain("5 ×");
+  expect(modelNumbers[2]!.value).toBe("0");
+  await act(async () => { container.unmount(); });
+});

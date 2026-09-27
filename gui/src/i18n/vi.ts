@@ -1708,6 +1708,7 @@ export const vi: Record<TKey, string> = {
   "pws.pacingRemove": "Xóa",
   "pws.pacingRemoveModel": "Xoá ghi đè pacing yêu cầu cho {model}",
   "pws.pacingRuleRequired": "Chỉ bật pacing yêu cầu sau khi đã thiết lập giới hạn provider hoặc một ghi đè model.",
+  "pws.pacingCapInvalid": "Số yêu cầu đồng thời tối đa phải là số nguyên lớn hơn hoặc bằng 1.",
   "pws.saving": "Đang lưu…",
   "pws.settingsSaved": "Đã lưu cài đặt.",
   "pws.accountModeSaved": "Đã lưu chế độ tài khoản.",
